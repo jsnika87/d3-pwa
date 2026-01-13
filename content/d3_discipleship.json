@@ -1,0 +1,389 @@
+{
+  "program": "Discipleship 32-week",
+  "weeks": [
+    {
+      "week": 1,
+      "title": "Week 1",
+      "readings": [
+        "Luke 1",
+        "Luke 2",
+        "Matthew 2",
+        "Mark 1",
+        "John 1"
+      ],
+      "memoryVerse": "Colossians 1:15-17"
+    },
+    {
+      "week": 2,
+      "title": "Week 2",
+      "readings": [
+        "Matthew 3",
+        "Matthew 4",
+        "Matthew 5",
+        "Matthew 6",
+        "Matthew 7"
+      ],
+      "memoryVerse": "Colossians 1:15-17"
+    },
+    {
+      "week": 3,
+      "title": "Week 3",
+      "readings": [
+        "Matthew 8",
+        "Luke 9:10-62",
+        "Mark 10",
+        "Luke 12",
+        "John 3"
+      ],
+      "memoryVerse": "Colossians 1:15-17"
+    },
+    {
+      "week": 4,
+      "title": "Week 4",
+      "readings": [
+        "Luke 14",
+        "John 6",
+        "Matthew 19:16-30",
+        "Luke 15",
+        "Luke 16"
+      ],
+      "memoryVerse": "Colossians 1:15-17"
+    },
+    {
+      "week": 5,
+      "title": "Week 5",
+      "readings": [
+        "Luke 18",
+        "John 4",
+        "John 11, Matthew 21:1-13",
+        "John 13",
+        "John 14"
+      ],
+      "memoryVerse": "Romans 3:23 & 6:23"
+    },
+    {
+      "week": 6,
+      "title": "Week 6",
+      "readings": [
+        "John 15",
+        "Matthew 24:1-31",
+        "John 16",
+        "John 17",
+        "Matthew 26:35-27:31"
+      ],
+      "memoryVerse": "Romans 3:23 & 6:23"
+    },
+    {
+      "week": 7,
+      "title": "Week 7",
+      "readings": [
+        "Matthew 27:32-66",
+        "Luke 23:26-56",
+        "John 19",
+        "Mark 16:1-8",
+        "Luke 24"
+      ],
+      "memoryVerse": "Romans 3:23 & 6:23"
+    },
+    {
+      "week": 8,
+      "title": "Week 8",
+      "readings": [
+        "John 20",
+        "John 21",
+        "Matthew 28",
+        "Acts 1",
+        "Acts 2"
+      ],
+      "memoryVerse": "Romans 3:23 & 6:23"
+    },
+    {
+      "week": 9,
+      "title": "Week 9",
+      "readings": [
+        "Acts 3",
+        "Acts 4",
+        "Acts 5",
+        "Acts 6",
+        "Acts 7"
+      ],
+      "memoryVerse": "Ephesians 2:1-3"
+    },
+    {
+      "week": 10,
+      "title": "Week 10",
+      "readings": [
+        "Acts 8",
+        "Acts 9",
+        "Acts 10",
+        "Acts 11",
+        "Acts 12"
+      ],
+      "memoryVerse": "Ephesians 2:1-3"
+    },
+    {
+      "week": 11,
+      "title": "Week 11",
+      "readings": [
+        "Acts 13",
+        "Acts 14",
+        "James 1",
+        "James 2",
+        "James 3"
+      ],
+      "memoryVerse": "Ephesians 2:1-3"
+    },
+    {
+      "week": 12,
+      "title": "Week 12",
+      "readings": [
+        "James 4",
+        "James 5",
+        "Acts 15",
+        "Acts 16",
+        "Galatians 1"
+      ],
+      "memoryVerse": "Ephesians 2:1-3"
+    },
+    {
+      "week": 13,
+      "title": "Week 13",
+      "readings": [
+        "Galatians 2",
+        "Galatians 3",
+        "Galatians 4",
+        "Galatians 5-6",
+        "Acts 17-18:17"
+      ],
+      "memoryVerse": "Romans 5:6-9"
+    },
+    {
+      "week": 14,
+      "title": "Week 14",
+      "readings": [
+        "1 Thessalonians 1-3",
+        "1 Thessalonians 4-5",
+        "2 Thessalonians 1-3",
+        "Acts 18:18-28, 19",
+        "1 Corinthians 1"
+      ],
+      "memoryVerse": "Romans 5:6-9"
+    },
+    {
+      "week": 15,
+      "title": "Week 15",
+      "readings": [
+        "1 Corinthians 2",
+        "1 Corinthians 3",
+        "1 Corinthians 4",
+        "1 Corinthians 5",
+        "1 Corinthians 6"
+      ],
+      "memoryVerse": "Romans 5:6-9"
+    },
+    {
+      "week": 16,
+      "title": "Week 16",
+      "readings": [
+        "1 Corinthians 7",
+        "1 Corinthians 8",
+        "1 Corinthians 9",
+        "1 Corinthians 10",
+        "1 Corinthians 11"
+      ],
+      "memoryVerse": "Romans 5:6-9"
+    },
+    {
+      "week": 17,
+      "title": "Week 17",
+      "readings": [
+        "1 Corinthians 12",
+        "1 Corinthians 13",
+        "1 Corinthians 14",
+        "1 Corinthians 15-16",
+        "2 Corinthians 1"
+      ],
+      "memoryVerse": "John 3:16-17"
+    },
+    {
+      "week": 18,
+      "title": "Week 18",
+      "readings": [
+        "2 Corinthians 2",
+        "2 Corinthians 3",
+        "2 Corinthians 4",
+        "2 Corinthians 5",
+        "2 Corinthians 6"
+      ],
+      "memoryVerse": "John 3:16-17"
+    },
+    {
+      "week": 19,
+      "title": "Week 19",
+      "readings": [
+        "2 Corinthians 7",
+        "2 Corinthians 8",
+        "2 Corinthians 9",
+        "2 Corinthians 10",
+        "2 Corinthians 11"
+      ],
+      "memoryVerse": "John 3:16-17"
+    },
+    {
+      "week": 20,
+      "title": "Week 20",
+      "readings": [
+        "2 Corinthians 12-13",
+        "Acts 20:1-3, Romans 1",
+        "Romans 2",
+        "Romans 3",
+        "Romans 4"
+      ],
+      "memoryVerse": "John 3:16-17"
+    },
+    {
+      "week": 21,
+      "title": "Week 21",
+      "readings": [
+        "Romans 5",
+        "Romans 6",
+        "Romans 7",
+        "Romans 8",
+        "Romans 9"
+      ],
+      "memoryVerse": "Mark 1:14-15"
+    },
+    {
+      "week": 22,
+      "title": "Week 22",
+      "readings": [
+        "Romans 10",
+        "Romans 11",
+        "Romans 12",
+        "Romans 13",
+        "Romans 14"
+      ],
+      "memoryVerse": "Mark 1:14-15"
+    },
+    {
+      "week": 23,
+      "title": "Week 23",
+      "readings": [
+        "Romans 15-16",
+        "Acts 20",
+        "Acts 21",
+        "Acts 22",
+        "Acts 23"
+      ],
+      "memoryVerse": "Mark 1:14-15"
+    },
+    {
+      "week": 24,
+      "title": "Week 24",
+      "readings": [
+        "Acts 24",
+        "Acts 25",
+        "Acts 26",
+        "Acts 27",
+        "Acts 28"
+      ],
+      "memoryVerse": "Mark 1:14-15"
+    },
+    {
+      "week": 25,
+      "title": "Week 25",
+      "readings": [
+        "Colossians 1",
+        "Colossians 2",
+        "Colossians 3-4",
+        "Ephesians 1",
+        "Ephesians 2"
+      ],
+      "memoryVerse": "Romans 10:9-11"
+    },
+    {
+      "week": 26,
+      "title": "Week 26",
+      "readings": [
+        "Ephesians 3",
+        "Ephesians 4",
+        "Ephesians 5",
+        "Ephesians 6",
+        "Philippians 1"
+      ],
+      "memoryVerse": "Romans 10:9-11"
+    },
+    {
+      "week": 27,
+      "title": "Week 27",
+      "readings": [
+        "Philippians 2",
+        "Philippians 3",
+        "Philippians 4",
+        "Hebrews 1",
+        "Hebrews 2"
+      ],
+      "memoryVerse": "Romans 10:9-11"
+    },
+    {
+      "week": 28,
+      "title": "Week 28",
+      "readings": [
+        "Hebrews 3",
+        "Hebrews 4",
+        "Hebrews 5",
+        "Hebrews 6",
+        "Hebrews 7"
+      ],
+      "memoryVerse": "Romans 10:9-11"
+    },
+    {
+      "week": 29,
+      "title": "Week 29",
+      "readings": [
+        "Hebrews 8",
+        "Hebrews 9",
+        "Hebrews 10",
+        "Hebrews 11",
+        "Hebrews 12-13"
+      ],
+      "memoryVerse": "Ephesians 2:8-10"
+    },
+    {
+      "week": 30,
+      "title": "Week 30",
+      "readings": [
+        "1 Timothy 1-2",
+        "1 Timothy 3-4",
+        "1 Timothy 5-6",
+        "2 Timothy 1-2",
+        "2 Timothy 3-4"
+      ],
+      "memoryVerse": "Ephesians 2:8-10"
+    },
+    {
+      "week": 31,
+      "title": "Week 31",
+      "readings": [
+        "1 Peter 1",
+        "1 Peter 2-3",
+        "1 Peter 4-5",
+        "2 Peter 1",
+        "2 Peter 2-3"
+      ],
+      "memoryVerse": "Ephesians 2:8-10"
+    },
+    {
+      "week": 32,
+      "title": "Week 32",
+      "readings": [
+        "1 John 1-2",
+        "1 John 3-5",
+        "Revelation 1",
+        "Revelation 2",
+        "Revelation 3"
+      ],
+      "memoryVerse": "Ephesians 2:8-10"
+    }
+  ]
+}
