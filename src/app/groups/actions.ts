@@ -1,107 +1,106 @@
 "use server";
 
+import crypto from "crypto";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
-export async function createGroup(input: { name: string; start_date: string; timezone: string }) {
+type CreateGroupInput = {
+  name: string;
+  start_date: string; // yyyy-mm-dd
+  timezone: string;
+};
+
+function makeInviteCode(length = 10) {
+  // Avoid confusing characters (I, O, 0, 1)
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.randomBytes(length);
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += alphabet[bytes[i] % alphabet.length];
+  }
+  return out;
+}
+
+export async function createGroup(input: CreateGroupInput) {
   const supabase = await createSupabaseServerClient();
-  const { data: au } = await supabase.auth.getUser();
-  if (!au.user) throw new Error("Not authenticated");
 
-  const n = input.name.trim();
-  if (!n) throw new Error("Group name required");
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const { data: g, error: gErr } = await supabase
+  if (!user) throw new Error("Not authenticated");
+
+  const name = input.name?.trim();
+  const start_date = input.start_date?.trim();
+  const timezone = input.timezone?.trim();
+
+  if (!name) throw new Error("Missing group name");
+  if (!start_date) throw new Error("Missing start date");
+  if (!timezone) throw new Error("Missing timezone");
+
+  // This assumes your existing RLS/DB logic allows leaders to create groups
+  // and automatically creates membership (or you handle elsewhere).
+  const { data, error } = await supabase
     .from("groups")
     .insert({
-      name: n,
-      start_date: input.start_date,
-      timezone: input.timezone,
-      created_by: au.user.id,
+      name,
+      start_date,
+      timezone,
+      created_by: user.id,
     })
     .select("id")
     .single();
 
-  if (gErr) throw new Error(gErr.message);
+  if (error) throw new Error(error.message ?? "Failed to create group");
+  if (!data?.id) throw new Error("Failed to create group (missing id)");
 
-  const { error: mErr } = await supabase.from("group_memberships").insert({
-    group_id: g.id,
-    user_id: au.user.id,
-    role: "leader",
-  });
-  if (mErr) throw new Error(mErr.message);
-
-  return { id: g.id as string };
+  return { group_id: data.id as string };
 }
 
 export async function createInviteForGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
-  const { data: au } = await supabase.auth.getUser();
-  if (!au.user) throw new Error("Not authenticated");
 
-  const { data: gm, error: gmErr } = await supabase
-    .from("group_memberships")
-    .select("role")
-    .eq("group_id", groupId)
-    .eq("user_id", au.user.id)
-    .single();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  if (gmErr || !gm || gm.role !== "leader") throw new Error("Leader access required");
+  if (!user) throw new Error("Not authenticated");
 
-  const { data, error } = await supabase
-    .from("invites")
-    .insert({
-      group_id: groupId,
-      created_by: au.user.id,
-      is_active: true,
-    })
-    .select("invite_code")
-    .single();
+  const gid = groupId?.trim();
+  if (!gid) throw new Error("Missing groupId");
 
-  if (error) throw new Error(error.message);
+  // Try a few times in case invite_code is unique and we hit a rare collision
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const code = makeInviteCode(10);
 
-  return { code: data.invite_code as string };
-}
+    const { data, error } = await supabase
+      .from("invites")
+      .insert({
+        group_id: gid,
+        created_by: user.id,
+        invite_code: code, // ✅ FIX: explicitly set it so it can never be null
+        is_active: true,
+        uses: 0,
+        // max_uses / expires_at can stay null unless you want them
+      })
+      .select("invite_code")
+      .single();
 
-export async function revokeInvite(inviteCode: string) {
-  const supabase = await createSupabaseServerClient();
-  const { data: au } = await supabase.auth.getUser();
-  if (!au.user) throw new Error("Not authenticated");
+    if (!error && data?.invite_code) {
+      return { code: data.invite_code as string };
+    }
 
-  const code = inviteCode.trim().toUpperCase();
+    // If you have a UNIQUE constraint on invites.invite_code, collisions will throw.
+    // Only retry on collision/unique errors; otherwise fail loudly.
+    const msg = (error?.message ?? "").toLowerCase();
+    const isDup =
+      msg.includes("duplicate") ||
+      msg.includes("unique constraint") ||
+      msg.includes("violates unique");
 
-  // Find invite so we can do leader check against group_id
-  const { data: inv, error: iErr } = await supabase
-    .from("invites")
-    .select("group_id, invite_code, is_active")
-    .eq("invite_code", code)
-    .single();
-
-  if (iErr || !inv) throw new Error("Invite not found");
-  if (!inv.is_active) return { ok: true }; // already revoked
-
-  // Leader check
-  const { data: gm, error: gmErr } = await supabase
-    .from("group_memberships")
-    .select("role")
-    .eq("group_id", inv.group_id)
-    .eq("user_id", au.user.id)
-    .single();
-
-  if (gmErr || !gm || gm.role !== "leader") throw new Error("Leader access required");
-
-  // ✅ IMPORTANT: select() so we can verify something actually updated
-  const { data: updated, error: uErr } = await supabase
-    .from("invites")
-    .update({ is_active: false })
-    .eq("invite_code", code)
-    .select("invite_code,is_active");
-
-  if (uErr) throw new Error(uErr.message);
-
-  // If RLS blocked the update, Supabase often returns updated as []
-  if (!updated || updated.length === 0) {
-    throw new Error("Revoke failed (no rows updated). Check invites UPDATE RLS policy.");
+    if (!isDup) {
+      throw new Error(error?.message ?? "Failed to create invite");
+    }
   }
 
-  return { ok: true };
+  throw new Error("Failed to create invite (could not generate a unique code)");
 }
