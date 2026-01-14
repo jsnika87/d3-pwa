@@ -569,11 +569,17 @@ export default function GroupsClient() {
                                 onClick={async () => {
                                   setRevokeBusyCode(inv.invite_code);
                                   setErrMsg(null);
+
+                                  // ✅ optimistic UI removal
+                                  setInvites((prev) => prev.filter((x) => x.invite_code !== inv.invite_code));
+
                                   try {
                                     await revokeInvite(inv.invite_code);
                                     await refreshInvites(selectedLeaderGroupId);
                                   } catch (e: any) {
+                                    // restore on failure by reloading list
                                     setErrMsg(e?.message ?? "Failed to revoke invite");
+                                    await refreshInvites(selectedLeaderGroupId);
                                   } finally {
                                     setRevokeBusyCode(null);
                                   }

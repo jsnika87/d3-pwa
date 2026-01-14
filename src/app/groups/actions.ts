@@ -38,7 +38,6 @@ export async function createInviteForGroup(groupId: string) {
   const { data: au } = await supabase.auth.getUser();
   if (!au.user) throw new Error("Not authenticated");
 
-  // Leader check
   const { data: gm, error: gmErr } = await supabase
     .from("group_memberships")
     .select("role")
@@ -60,17 +59,6 @@ export async function createInviteForGroup(groupId: string) {
 
   if (error) throw new Error(error.message);
 
-  // best-effort audit (won't block invite)
-  try {
-    await supabase.from("invite_audit").insert({
-      event: "invite_created",
-      group_id: groupId,
-      invite_code: data.invite_code,
-      actor_user_id: au.user.id,
-      target_user_id: null,
-    });
-  } catch {}
-
   return { code: data.invite_code as string };
 }
 
@@ -81,14 +69,15 @@ export async function revokeInvite(inviteCode: string) {
 
   const code = inviteCode.trim().toUpperCase();
 
-  // Find invite to get group_id
+  // Find invite so we can do leader check against group_id
   const { data: inv, error: iErr } = await supabase
     .from("invites")
-    .select("group_id, invite_code")
+    .select("group_id, invite_code, is_active")
     .eq("invite_code", code)
     .single();
 
   if (iErr || !inv) throw new Error("Invite not found");
+  if (!inv.is_active) return { ok: true }; // already revoked
 
   // Leader check
   const { data: gm, error: gmErr } = await supabase
@@ -100,23 +89,19 @@ export async function revokeInvite(inviteCode: string) {
 
   if (gmErr || !gm || gm.role !== "leader") throw new Error("Leader access required");
 
-  const { error } = await supabase
+  // ✅ IMPORTANT: select() so we can verify something actually updated
+  const { data: updated, error: uErr } = await supabase
     .from("invites")
     .update({ is_active: false })
-    .eq("invite_code", code);
+    .eq("invite_code", code)
+    .select("invite_code,is_active");
 
-  if (error) throw new Error(error.message);
+  if (uErr) throw new Error(uErr.message);
 
-  // best-effort audit
-  try {
-    await supabase.from("invite_audit").insert({
-      event: "invite_revoked",
-      group_id: inv.group_id,
-      invite_code: code,
-      actor_user_id: au.user.id,
-      target_user_id: null,
-    });
-  } catch {}
+  // If RLS blocked the update, Supabase often returns updated as []
+  if (!updated || updated.length === 0) {
+    throw new Error("Revoke failed (no rows updated). Check invites UPDATE RLS policy.");
+  }
 
   return { ok: true };
 }
