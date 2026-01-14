@@ -13,36 +13,16 @@ export async function joinGroupByCode(inviteCode: string) {
 
   const code = inviteCode.trim().toUpperCase();
 
-  // Atomically validate + increment uses + return group_id
-  // NOTE: Your RPC parameter name is p_code (matches your SQL function)
-  const { data: groupId, error: consumeErr } = await supabase.rpc("consume_invite", {
+  // ✅ One RPC does everything: validate invite, consume uses, create membership
+  const { data: groupId, error } = await supabase.rpc("join_group_by_code", {
     p_code: code,
   });
 
-  if (consumeErr || !groupId) {
-    throw new Error(consumeErr?.message ?? "Invalid invite code");
+  if (error || !groupId) {
+    // Helpful for debugging in Vercel logs
+    console.error("join_group_by_code error:", error);
+    throw new Error(error?.message ?? "Invalid invite code");
   }
 
-  // Add user to the group
-  const { error: memberErr } = await supabase.from("group_memberships").insert({
-    group_id: groupId,
-    user_id: user.id,
-    role: "member",
-  });
-
-  if (memberErr) {
-    // Ignore "already joined" (unique constraint) cases
-    const msg = memberErr.message?.toLowerCase?.() ?? "";
-    const isDuplicate =
-      msg.includes("duplicate") ||
-      msg.includes("already exists") ||
-      msg.includes("unique constraint") ||
-      msg.includes("violates unique");
-
-    if (!isDuplicate) {
-      throw new Error(memberErr.message);
-    }
-  }
-
-  return groupId;
+  return groupId as string;
 }
