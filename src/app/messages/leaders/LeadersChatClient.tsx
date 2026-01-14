@@ -4,17 +4,29 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+type ProfileMini = {
+  id: string;
+  display_name: string | null;
+};
+
 type Msg = {
   id: string;
   user_id: string;
   body: string;
   created_at: string;
+  profiles?: ProfileMini | ProfileMini[] | null;
 };
 
-type ProfileMini = {
-  id: string;
-  display_name: string | null;
-};
+function pickProfile(p: Msg["profiles"]): ProfileMini | null {
+  if (!p) return null;
+  if (Array.isArray(p)) return p[0] ?? null;
+  return p;
+}
+
+function displayNameFor(m: Msg, fallback = "Unknown") {
+  const p = pickProfile(m.profiles);
+  return p?.display_name?.trim() ? p.display_name : fallback;
+}
 
 export default function LeadersChatClient() {
   const [loading, setLoading] = useState(true);
@@ -22,75 +34,14 @@ export default function LeadersChatClient() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
-
-  // user_id -> display_name
-  const [nameById, setNameById] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
-
-  function displayNameFor(uid: string) {
-    const name = nameById[uid];
-    if (name && name.trim()) return name.trim();
-    return uid === userId ? "You" : "Unknown";
-  }
-
-  async function hydrateNamesFromMessages(list: Msg[]) {
-    const ids = Array.from(
-      new Set(list.map((m) => m.user_id).filter(Boolean))
-    );
-
-    // Only fetch what we don't already have
-    const missing = ids.filter((id) => !nameById[id]);
-    if (missing.length === 0) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name")
-      .in("id", missing);
-
-    if (error) {
-      // don't hard fail the chat just because names couldn't load
-      console.warn("hydrateNames leader chat error:", error);
-      return;
-    }
-
-    const rows = (data ?? []) as ProfileMini[];
-    setNameById((prev) => {
-      const next = { ...prev };
-      for (const r of rows) {
-        next[String(r.id)] = String(r.display_name ?? "").trim();
-      }
-      return next;
-    });
-  }
-
-  async function hydrateNameForUserId(uid: string) {
-    if (!uid) return;
-    if (nameById[uid]) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name")
-      .eq("id", uid)
-      .maybeSingle();
-
-    if (error) {
-      console.warn("hydrateNameForUserId error:", error);
-      return;
-    }
-
-    if (data?.id) {
-      setNameById((prev) => ({
-        ...prev,
-        [String(data.id)]: String(data.display_name ?? "").trim(),
-      }));
-    } else {
-      // ensure we don't refetch repeatedly
-      setNameById((prev) => ({ ...prev, [uid]: "" }));
-    }
-  }
+  const canSend = useMemo(
+    () => text.trim().length > 0 && !!userId && !sending,
+    [text, userId, sending]
+  );
 
   useEffect(() => {
     async function load() {
@@ -108,9 +59,17 @@ export default function LeadersChatClient() {
 
       const { data, error } = await supabase
         .from("leader_messages")
-        .select("id,user_id,body,created_at")
+        .select(
+          `
+          id,
+          user_id,
+          body,
+          created_at,
+          profiles:profiles ( id, display_name )
+        `
+        )
         .order("created_at", { ascending: true })
-        .limit(100);
+        .limit(150);
 
       if (error) {
         setErr(error.message ?? "Failed to load messages");
@@ -118,15 +77,11 @@ export default function LeadersChatClient() {
         return;
       }
 
-      const list = (data ?? []) as Msg[];
-      setMsgs(list);
-      await hydrateNamesFromMessages(list);
-
+      setMsgs((data ?? []) as Msg[]);
       setLoading(false);
     }
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -135,11 +90,12 @@ export default function LeadersChatClient() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "leader_messages" },
-        async (payload) => {
-          const m = payload.new as Msg;
-          setMsgs((prev) => [...prev, m]);
-          // try to fetch name for this sender if missing
-          hydrateNameForUserId(m.user_id);
+        (payload) => {
+          const incoming = payload.new as Msg;
+          setMsgs((prev) => {
+            if (prev.some((x) => x.id === incoming.id)) return prev;
+            return [...prev, incoming];
+          });
         }
       )
       .subscribe();
@@ -147,8 +103,7 @@ export default function LeadersChatClient() {
     return () => {
       supabase.removeChannel(channel);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, nameById]);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -157,18 +112,44 @@ export default function LeadersChatClient() {
   async function send() {
     setErr(null);
     const body = text.trim();
-    if (!body || !userId) return;
+    if (!body || !userId || sending) return;
 
+    setSending(true);
     setText("");
 
-    const { error } = await supabase.from("leader_messages").insert({
-      user_id: userId,
-      body,
-    });
+    try {
+      const { data, error } = await supabase
+        .from("leader_messages")
+        .insert({
+          user_id: userId,
+          body,
+        })
+        .select(
+          `
+          id,
+          user_id,
+          body,
+          created_at,
+          profiles:profiles ( id, display_name )
+        `
+        )
+        .single();
 
-    if (error) {
-      setErr(error.message ?? "Failed to send");
+      if (error || !data) {
+        setErr(error?.message ?? "Failed to send");
+        setText(body);
+        return;
+      }
+
+      setMsgs((prev) => {
+        if (prev.some((x) => x.id === data.id)) return prev;
+        return [...prev, data as Msg];
+      });
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to send");
       setText(body);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -204,6 +185,7 @@ export default function LeadersChatClient() {
     padding: "10px 12px",
     cursor: "pointer",
     whiteSpace: "nowrap",
+    opacity: canSend ? 1 : 0.6,
   };
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
@@ -233,7 +215,7 @@ export default function LeadersChatClient() {
               <div key={m.id} style={{ opacity: 0.95 }}>
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
                   {new Date(m.created_at).toLocaleString()} •{" "}
-                  {m.user_id === userId ? "You" : displayNameFor(m.user_id)}
+                  {m.user_id === userId ? "You" : displayNameFor(m, "Unknown")}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
               </div>
@@ -261,9 +243,10 @@ export default function LeadersChatClient() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
             }}
+            disabled={sending}
           />
           <button style={btn} disabled={!canSend} onClick={send}>
-            Send
+            {sending ? "Sending…" : "Send"}
           </button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>

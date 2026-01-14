@@ -4,18 +4,30 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+type ProfileMini = {
+  id: string;
+  display_name: string | null;
+};
+
 type Msg = {
   id: string;
   group_id: string;
   user_id: string;
   body: string;
   created_at: string;
+  profiles?: ProfileMini | ProfileMini[] | null; // Supabase sometimes returns object or array depending on relationship
 };
 
-type ProfileMini = {
-  id: string;
-  display_name: string | null;
-};
+function pickProfile(p: Msg["profiles"]): ProfileMini | null {
+  if (!p) return null;
+  if (Array.isArray(p)) return p[0] ?? null;
+  return p;
+}
+
+function displayNameFor(m: Msg, fallback = "Unknown") {
+  const p = pickProfile(m.profiles);
+  return p?.display_name?.trim() ? p.display_name : fallback;
+}
 
 export default function GroupChatClient({ groupId }: { groupId: string }) {
   const [loading, setLoading] = useState(true);
@@ -24,71 +36,16 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
-
-  // user_id -> display_name
-  const [nameById, setNameById] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
+  const canSend = useMemo(
+    () => text.trim().length > 0 && !!userId && !sending,
+    [text, userId, sending]
+  );
 
-  function displayNameFor(uid: string) {
-    const name = nameById[uid];
-    if (name && name.trim()) return name.trim();
-    return uid === userId ? "You" : "Unknown";
-  }
-
-  async function hydrateNamesFromMessages(list: Msg[]) {
-    const ids = Array.from(new Set(list.map((m) => m.user_id).filter(Boolean)));
-    const missing = ids.filter((id) => !nameById[id]);
-    if (missing.length === 0) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name")
-      .in("id", missing);
-
-    if (error) {
-      console.warn("hydrateNames group chat error:", error);
-      return;
-    }
-
-    const rows = (data ?? []) as ProfileMini[];
-    setNameById((prev) => {
-      const next = { ...prev };
-      for (const r of rows) {
-        next[String(r.id)] = String(r.display_name ?? "").trim();
-      }
-      return next;
-    });
-  }
-
-  async function hydrateNameForUserId(uid: string) {
-    if (!uid) return;
-    if (nameById[uid]) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name")
-      .eq("id", uid)
-      .maybeSingle();
-
-    if (error) {
-      console.warn("hydrateNameForUserId error:", error);
-      return;
-    }
-
-    if (data?.id) {
-      setNameById((prev) => ({
-        ...prev,
-        [String(data.id)]: String(data.display_name ?? "").trim(),
-      }));
-    } else {
-      // prevent repeated refetching
-      setNameById((prev) => ({ ...prev, [uid]: "" }));
-    }
-  }
-
+  // Load initial
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -103,21 +60,31 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
         return;
       }
 
-      // group name
-      const { data: g, error: gErr } = await supabase
+      // Group name
+      const { data: g } = await supabase
         .from("groups")
         .select("name")
         .eq("id", groupId)
         .single();
 
-      if (!gErr && g?.name) setGroupName(g.name);
+      if (g?.name) setGroupName(g.name);
 
+      // Messages + profile display names
       const { data, error } = await supabase
         .from("group_messages")
-        .select("id,group_id,user_id,body,created_at")
+        .select(
+          `
+          id,
+          group_id,
+          user_id,
+          body,
+          created_at,
+          profiles:profiles ( id, display_name )
+        `
+        )
         .eq("group_id", groupId)
         .order("created_at", { ascending: true })
-        .limit(100);
+        .limit(150);
 
       if (error) {
         setErr(error.message ?? "Failed to load messages");
@@ -125,17 +92,14 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
         return;
       }
 
-      const list = (data ?? []) as Msg[];
-      setMsgs(list);
-      await hydrateNamesFromMessages(list);
-
+      setMsgs((data ?? []) as Msg[]);
       setLoading(false);
     }
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
+  // Realtime subscribe for inserts (dedupe)
   useEffect(() => {
     const channel = supabase
       .channel(`group_chat:${groupId}`)
@@ -148,9 +112,15 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
           filter: `group_id=eq.${groupId}`,
         },
         (payload) => {
-          const m = payload.new as Msg;
-          setMsgs((prev) => [...prev, m]);
-          hydrateNameForUserId(m.user_id);
+          const incoming = payload.new as Msg;
+
+          // If realtime payload doesn't include joined profile (it won't),
+          // we still add it; name rendering will fall back unless your
+          // subscription is configured to include it (usually it's not).
+          setMsgs((prev) => {
+            if (prev.some((x) => x.id === incoming.id)) return prev;
+            return [...prev, incoming];
+          });
         }
       )
       .subscribe();
@@ -158,9 +128,9 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
     return () => {
       supabase.removeChannel(channel);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, userId, nameById]);
+  }, [groupId]);
 
+  // Keep scrolled to bottom
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs.length]);
@@ -168,19 +138,48 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
   async function send() {
     setErr(null);
     const body = text.trim();
-    if (!body || !userId) return;
+    if (!body || !userId || sending) return;
 
+    setSending(true);
     setText("");
 
-    const { error } = await supabase.from("group_messages").insert({
-      group_id: groupId,
-      user_id: userId,
-      body,
-    });
+    try {
+      // ✅ Insert and immediately get the inserted row back (with profile display_name)
+      const { data, error } = await supabase
+        .from("group_messages")
+        .insert({
+          group_id: groupId,
+          user_id: userId,
+          body,
+        })
+        .select(
+          `
+          id,
+          group_id,
+          user_id,
+          body,
+          created_at,
+          profiles:profiles ( id, display_name )
+        `
+        )
+        .single();
 
-    if (error) {
-      setErr(error.message ?? "Failed to send");
+      if (error || !data) {
+        setErr(error?.message ?? "Failed to send");
+        setText(body);
+        return;
+      }
+
+      // ✅ Optimistically update UI now (no refresh needed)
+      setMsgs((prev) => {
+        if (prev.some((x) => x.id === data.id)) return prev;
+        return [...prev, data as Msg];
+      });
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to send");
       setText(body);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -216,6 +215,7 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
     padding: "10px 12px",
     cursor: "pointer",
     whiteSpace: "nowrap",
+    opacity: canSend ? 1 : 0.6,
   };
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
@@ -245,7 +245,7 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
               <div key={m.id} style={{ opacity: 0.95 }}>
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
                   {new Date(m.created_at).toLocaleString()} •{" "}
-                  {m.user_id === userId ? "You" : displayNameFor(m.user_id)}
+                  {m.user_id === userId ? "You" : displayNameFor(m, "Unknown")}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
               </div>
@@ -273,9 +273,10 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
             }}
+            disabled={sending}
           />
           <button style={btn} disabled={!canSend} onClick={send}>
-            Send
+            {sending ? "Sending…" : "Send"}
           </button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
