@@ -59,6 +59,17 @@ export default function GroupsClient() {
   const [roleSaving, setRoleSaving] = useState(false);
   const [roleMsg, setRoleMsg] = useState<string | null>(null);
 
+  const leaderMemberships = useMemo(
+    () => memberships.filter((m) => m.role === "leader"),
+    [memberships]
+  );
+
+  const isLeaderAnywhere = leaderMemberships.length > 0;
+
+  const selectedProfile = useMemo(() => {
+    return allProfiles.find((p) => p.id === selectedUserId) ?? null;
+  }, [allProfiles, selectedUserId]);
+
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -112,14 +123,7 @@ export default function GroupsClient() {
     load();
   }, []);
 
-  const leaderMemberships = useMemo(
-    () => memberships.filter((m) => m.role === "leader"),
-    [memberships]
-  );
-
-  const isLeaderAnywhere = leaderMemberships.length > 0;
-
-  // Load all profiles (active users) for dropdown
+  // Load all profiles (active users) for dropdown (leader-only)
   useEffect(() => {
     async function loadProfiles() {
       if (!isLeaderAnywhere) return;
@@ -144,7 +148,6 @@ export default function GroupsClient() {
           }));
 
         setAllProfiles(cleaned);
-
         if (!selectedUserId && cleaned.length > 0) {
           setSelectedUserId(cleaned[0].id);
         }
@@ -159,11 +162,16 @@ export default function GroupsClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLeaderAnywhere]);
 
-  const selectedProfile = useMemo(() => {
-    return allProfiles.find((p) => p.id === selectedUserId) ?? null;
-  }, [allProfiles, selectedUserId]);
+  async function logout() {
+    try {
+      await supabase.auth.signOut();
+      window.location.href = "/login";
+    } catch {
+      window.location.href = "/login";
+    }
+  }
 
-  // ---- Styles ----
+  // ---- Styles (match your existing vibe) ----
   const pageWrap: React.CSSProperties = {
     maxWidth: 900,
     margin: "0 auto",
@@ -201,13 +209,22 @@ export default function GroupsClient() {
 
   return (
     <div style={pageWrap}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+      {/* HEADER: restore your original layout */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Your Groups</h1>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 12, opacity: 0.9 }}>
-          <Link href="/join" style={{ color: "rgba(255,255,255,0.92)" }}>
-            Join with code
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+          <Link href="/messages" style={{ textDecoration: "none" }}>
+            <button style={pillBtn}>💬 Messages</button>
           </Link>
+
+          <Link href="/join" style={{ textDecoration: "none" }}>
+            <button style={pillBtn}>Join with code</button>
+          </Link>
+
+          <button style={pillBtn} onClick={logout}>
+            Logout
+          </button>
         </div>
       </div>
 
@@ -224,7 +241,10 @@ export default function GroupsClient() {
                 <div style={{ opacity: 0.75, fontSize: 12 }}>({m.role})</div>
 
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                  <Link href={`/groups/${m.group.id}`} style={{ ...pillBtn, textDecoration: "none" }}>
+                  <Link
+                    href={`/groups/${m.group.id}`}
+                    style={{ ...pillBtn, textDecoration: "none" }}
+                  >
                     Open
                   </Link>
 
@@ -352,7 +372,7 @@ export default function GroupsClient() {
             </div>
           </div>
 
-          {/* Global role tool */}
+          {/* Global Role tool */}
           <div style={surface}>
             <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
               Leader Tools (Global Role)
@@ -431,12 +451,6 @@ export default function GroupsClient() {
           </div>
         </div>
       )}
-
-      <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
-        <Link href="/messages" style={{ textDecoration: "none" }}>
-          <button style={pillBtn}>💬 Messages</button>
-        </Link>
-      </div>
     </div>
   );
 }
