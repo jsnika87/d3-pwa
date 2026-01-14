@@ -12,7 +12,6 @@ type ResolveResult = {
     reference?: string;
     content?: string; // html
   };
-  // helpful debug for compound refs
   parts?: Array<{
     ref: string;
     usfmTried: string[];
@@ -23,8 +22,8 @@ type ResolveResult = {
 };
 
 /**
- * Full Bible book mapping → USFM (3-char for most, with 1/2/3 prefixes where needed)
- * This accepts lots of common variations/abbreviations.
+ * Full Bible book mapping → USFM
+ * (added common misspellings like "Galations")
  */
 const BOOK_USFM: Record<string, string> = {
   // OT
@@ -142,8 +141,12 @@ const BOOK_USFM: Record<string, string> = {
   "2 co": "2CO",
   "1co": "1CO",
   "2co": "2CO",
+
   galatians: "GAL",
   gal: "GAL",
+  // ✅ common misspelling in your data
+  galations: "GAL",
+
   ephesians: "EPH",
   eph: "EPH",
   philippians: "PHP",
@@ -210,20 +213,18 @@ function normalizeBookKey(s: string) {
 function bookToUsfm(bookRaw: string): string | null {
   const raw = normalizeSpaces(bookRaw);
 
-  // If already USFM book code like "GAL", "1CO"
+  // Already USFM book code like "GAL", "1CO"
   if (/^(?:[1-3])?[A-Z]{2,3}$/.test(raw)) return raw;
 
   const cleaned = normalizeBookKey(raw);
 
   if (BOOK_USFM[cleaned]) return BOOK_USFM[cleaned];
 
-  // Handle "1John" or "1 John" styles more generally
   const m = cleaned.match(/^([1-3])\s*(.+)$/);
   if (m) {
     const key = `${m[1]} ${m[2]}`.trim();
     if (BOOK_USFM[key]) return BOOK_USFM[key];
 
-    // also try without space e.g. "1john"
     const key2 = `${m[1]}${m[2]}`.replace(/\s+/g, "");
     if (BOOK_USFM[key2]) return BOOK_USFM[key2];
   }
@@ -242,13 +243,13 @@ type ParsedRef = {
 function parseReferenceToParsed(ref: string): ParsedRef | null {
   const raw = normalizeSpaces(ref);
 
-  // "Book 1" or "Book 1:2" or "Book 1:2-4" or "Book 1:2-2:3"
+  // "Book 1" or "Book 1:2" or "Book 1:2-4" or "Book 1:2-2:3" or "Book 5-6"
   const match = raw.match(
     /^(.+?)\s+(\d+)(?::([\d]+))?(?:\s*-\s*(\d+)?(?::([\d]+))?)?$/
   );
 
   if (!match) {
-    // Maybe it's already USFM like "LUK.1" or "COL.1.15-17"
+    // Already USFM-like "COL.1" etc
     const u = raw.toUpperCase();
     if (/^[1-3]?[A-Z]{2,3}\.\d+/.test(u)) {
       const [book, rest] = u.split(".", 2);
@@ -278,16 +279,15 @@ function parseReferenceToParsed(ref: string): ParsedRef | null {
         verseEnd = Number(match[4]);
       }
     } else {
-      // "Luke 1-3" (chapter range)
+      // ✅ "Galatians 5-6" (chapter range)
       chapterEnd = Number(match[4]);
-      verseEnd = match[5] ? Number(match[5]) : undefined;
     }
   }
 
   return { bookUsfm, chapterStart, verseStart, chapterEnd, verseEnd };
 }
 
-function isCrossChapterRef(ref: string):
+function isCrossChapterVerseRange(ref: string):
   | { isCross: false }
   | {
       isCross: true;
@@ -321,81 +321,6 @@ function isCrossChapterRef(ref: string):
   };
 }
 
-function usfmToBestEnglishBook(usfm: string) {
-  // For “split” fallback text only
-  const map: Record<string, string> = {
-    GEN: "Genesis",
-    EXO: "Exodus",
-    LEV: "Leviticus",
-    NUM: "Numbers",
-    DEU: "Deuteronomy",
-    JOS: "Joshua",
-    JDG: "Judges",
-    RUT: "Ruth",
-    "1SA": "1 Samuel",
-    "2SA": "2 Samuel",
-    "1KI": "1 Kings",
-    "2KI": "2 Kings",
-    "1CH": "1 Chronicles",
-    "2CH": "2 Chronicles",
-    EZR: "Ezra",
-    NEH: "Nehemiah",
-    EST: "Esther",
-    JOB: "Job",
-    PSA: "Psalms",
-    PRO: "Proverbs",
-    ECC: "Ecclesiastes",
-    SNG: "Song of Solomon",
-    ISA: "Isaiah",
-    JER: "Jeremiah",
-    LAM: "Lamentations",
-    EZK: "Ezekiel",
-    DAN: "Daniel",
-    HOS: "Hosea",
-    JOL: "Joel",
-    AMO: "Amos",
-    OBA: "Obadiah",
-    JON: "Jonah",
-    MIC: "Micah",
-    NAM: "Nahum",
-    HAB: "Habakkuk",
-    ZEP: "Zephaniah",
-    HAG: "Haggai",
-    ZEC: "Zechariah",
-    MAL: "Malachi",
-    MAT: "Matthew",
-    MRK: "Mark",
-    LUK: "Luke",
-    JHN: "John",
-    ACT: "Acts",
-    ROM: "Romans",
-    "1CO": "1 Corinthians",
-    "2CO": "2 Corinthians",
-    GAL: "Galatians",
-    EPH: "Ephesians",
-    PHP: "Philippians",
-    COL: "Colossians",
-    "1TH": "1 Thessalonians",
-    "2TH": "2 Thessalonians",
-    "1TI": "1 Timothy",
-    "2TI": "2 Timothy",
-    TIT: "Titus",
-    PHM: "Philemon",
-    HEB: "Hebrews",
-    JAS: "James",
-    "1PE": "1 Peter",
-    "2PE": "2 Peter",
-    "1JN": "1 John",
-    "2JN": "2 John",
-    "3JN": "3 John",
-    JUD: "Jude",
-    REV: "Revelation",
-  };
-
-  const key = usfm.toUpperCase();
-  return map[key] ?? key;
-}
-
 function buildCandidatePassageIds(ref: string): { usfm: string; candidates: string[] } | null {
   const raw = normalizeSpaces(ref);
 
@@ -409,7 +334,16 @@ function buildCandidatePassageIds(ref: string): { usfm: string; candidates: stri
 
   const { bookUsfm, chapterStart, verseStart, chapterEnd, verseEnd } = parsed;
 
-  // Base (no verses)
+  // ✅ Chapter range (no verses): "GAL 5-6"
+  if (!verseStart && chapterEnd && chapterEnd !== chapterStart) {
+    const candidates: string[] = [
+      `${bookUsfm}.${chapterStart}-${chapterEnd}`,
+      `${bookUsfm}.${chapterStart}-${bookUsfm}.${chapterEnd}`,
+    ];
+    return { usfm: candidates[0], candidates };
+  }
+
+  // Chapter only
   if (!verseStart) {
     const usfm = `${bookUsfm}.${chapterStart}`;
     return { usfm, candidates: [usfm] };
@@ -421,18 +355,16 @@ function buildCandidatePassageIds(ref: string): { usfm: string; candidates: stri
     return { usfm, candidates: [usfm] };
   }
 
-  // Ranges
+  // Verse ranges
   const chEnd = chapterEnd ?? chapterStart;
   const vEnd = verseEnd ?? verseStart;
 
   const candidates: string[] = [];
 
-  // Same chapter compact: COL.1.15-17
   if (chEnd === chapterStart) {
     candidates.push(`${bookUsfm}.${chapterStart}.${verseStart}-${vEnd}`);
     candidates.push(`${bookUsfm}.${chapterStart}.${verseStart}-${bookUsfm}.${chapterStart}.${vEnd}`);
   } else {
-    // Cross-chapter range candidates
     candidates.push(`${bookUsfm}.${chapterStart}.${verseStart}-${chEnd}.${vEnd}`);
     candidates.push(`${bookUsfm}.${chapterStart}.${verseStart}-${bookUsfm}.${chEnd}.${vEnd}`);
   }
@@ -456,9 +388,7 @@ async function yvFetchJson(url: string, appKey: string) {
   if (contentType.includes("application/json")) {
     try {
       json = JSON.parse(text);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   return { res, contentType, text, json };
@@ -467,10 +397,8 @@ async function yvFetchJson(url: string, appKey: string) {
 function splitCompoundRefs(input: string): string[] {
   const raw = normalizeSpaces(input);
 
-  // First split by commas
   const commaParts = raw.split(",").map((p) => p.trim()).filter(Boolean);
 
-  // Then within each part, split by " & " or " and "
   const parts: string[] = [];
   for (const p of commaParts) {
     const sub = p
@@ -480,21 +408,18 @@ function splitCompoundRefs(input: string): string[] {
     parts.push(...sub);
   }
 
-  // Now apply inheritance logic
   const out: string[] = [];
-  let lastBook: string | null = null; // e.g., "Romans"
-  let lastChapter: string | null = null; // e.g., "3"
+  let lastBook: string | null = null;
+  let lastChapter: string | null = null;
 
   for (const p of parts) {
     const part = normalizeSpaces(p);
 
-    // If it clearly starts with letters -> has book
     const hasBook = /^[A-Za-z]/.test(part) || /^[1-3]\s*[A-Za-z]/.test(part);
 
     if (hasBook) {
       out.push(part);
 
-      // update lastBook/lastChapter from this reference
       const mBookChap = part.match(/^(.+?)\s+(\d+)/);
       if (mBookChap) {
         lastBook = normalizeSpaces(mBookChap[1]);
@@ -503,16 +428,13 @@ function splitCompoundRefs(input: string): string[] {
       continue;
     }
 
-    // If starts with a digit, try to inherit book
     if (/^\d/.test(part) && lastBook) {
       out.push(`${lastBook} ${part}`);
-
       const mChap = part.match(/^(\d+)(?::|$)/);
       if (mChap) lastChapter = mChap[1];
       continue;
     }
 
-    // If it's just a verse like "23" or "23-24" and we have book+chapter
     if (/^\d+(?:-\d+)?$/.test(part) && lastBook && lastChapter) {
       out.push(`${lastBook} ${lastChapter}:${part}`);
       continue;
@@ -524,11 +446,7 @@ function splitCompoundRefs(input: string): string[] {
   return out;
 }
 
-/**
- * Verse trimming helpers.
- * YouVersion HTML includes markers like: <span class="yv-v" v="15"></span>
- * We'll slice the returned HTML to only include the requested verse range.
- */
+// Verse trimming helpers
 type VerseMarker = { v: number; idx: number };
 
 function findVerseMarkers(html: string): VerseMarker[] {
@@ -581,18 +499,14 @@ type FetchSingleErr = {
 
 type FetchSingleResult = FetchSingleOk | FetchSingleErr;
 
-/**
- * Fetch a specific USFM passage id and return YouVersion reference/content.
- * This is used by the normal candidate loop and by the chapter+trim fallback.
- */
 async function fetchByPassageId(
   passageId: string,
   refForError: string,
   bibleId: number,
   appKey: string
 ): Promise<
-  | { ok: true; reference: string; content: string; attempts: { url: string; status: number; contentType: string; preview: string } }
-  | { ok: false; status: number; message: string; attempts: { url: string; status: number; contentType: string; preview: string } }
+  | { ok: true; reference: string; content: string; attempt: { url: string; status: number; contentType: string; preview: string } }
+  | { ok: false; status: number; message: string; attempt: { url: string; status: number; contentType: string; preview: string } }
 > {
   const url = `https://api.youversion.com/v1/bibles/${bibleId}/passages/${encodeURIComponent(
     passageId
@@ -612,7 +526,7 @@ async function fetchByPassageId(
       (json?.message as string | undefined) ||
       (json?.error as string | undefined) ||
       `Bible passage ${passageId} for version ${bibleId} not found`;
-    return { ok: false, status: res.status, message: msg, attempts: attempt };
+    return { ok: false, status: res.status, message: msg, attempt };
   }
 
   const data = json?.data ?? json;
@@ -620,10 +534,32 @@ async function fetchByPassageId(
   const content = data?.content as string | undefined;
 
   if (!content) {
-    return { ok: false, status: 502, message: "Passage response missing content", attempts: attempt };
+    return { ok: false, status: 502, message: "Passage response missing content", attempt };
   }
 
-  return { ok: true, reference, content, attempts: attempt };
+  return { ok: true, reference, content, attempt };
+}
+
+function parsedToDisplayRef(p: ParsedRef): string | null {
+  const bookName = p.bookUsfm; // fine; caller can still show original ref
+  const c1 = p.chapterStart;
+  const v1 = p.verseStart;
+  const c2 = p.chapterEnd;
+  const v2 = p.verseEnd;
+
+  if (!v1) {
+    if (c2 && c2 !== c1) return `${bookName} ${c1}-${c2}`;
+    return `${bookName} ${c1}`;
+  }
+
+  if (!c2 && !v2) return `${bookName} ${c1}:${v1}`;
+
+  const endC = c2 ?? c1;
+  const endV = v2 ?? v1;
+
+  if (endC === c1) return `${bookName} ${c1}:${v1}-${endV}`;
+
+  return `${bookName} ${c1}:${v1}-${endC}:${endV}`;
 }
 
 async function fetchPassageHtmlSingle(
@@ -647,7 +583,7 @@ async function fetchPassageHtmlSingle(
   // Try direct candidates first
   for (const passageId of candidates) {
     const fetched = await fetchByPassageId(passageId, ref, bibleId, appKey);
-    attempts.push(fetched.attempts);
+    attempts.push(fetched.attempt);
 
     if (fetched.ok) {
       return {
@@ -662,22 +598,51 @@ async function fetchPassageHtmlSingle(
     }
   }
 
-  /**
-   * Fallback strategy:
-   * - If ref is same-chapter range, fetch the chapter and trim verses.
-   * - If ref is cross-chapter, fetch both chapters and trim: startVerse→end, and 1→endVerse.
-   *
-   * This prevents "too much scripture" and avoids passage-id formats that YouVersion sometimes won't serve.
-   */
+  // Fallbacks
   const parsed = parseReferenceToParsed(ref);
   if (parsed) {
     const { bookUsfm, chapterStart, verseStart, chapterEnd, verseEnd } = parsed;
+
+    // ✅ Chapter range fallback: fetch both chapters & combine
+    if (!verseStart && chapterEnd && chapterEnd !== chapterStart) {
+      const blocks: string[] = [];
+
+      for (let ch = chapterStart; ch <= chapterEnd; ch++) {
+        const chapId = `${bookUsfm}.${ch}`;
+        const fetchedChap = await fetchByPassageId(chapId, ref, bibleId, appKey);
+        attempts.push(fetchedChap.attempt);
+
+        if (!fetchedChap.ok) {
+          return {
+            ok: false,
+            ref,
+            usfmTried: candidates,
+            error: { status: fetchedChap.status, message: fetchedChap.message },
+            attempts,
+          };
+        }
+
+        blocks.push(
+          `<div style="margin:10px 0 6px;font-weight:700;">${escapeHtml(bookUsfm)} ${ch}</div>${fetchedChap.content}`
+        );
+      }
+
+      return {
+        ok: true,
+        ref,
+        chosenUsfm: `${bookUsfm}.${chapterStart}-${chapterEnd}`,
+        usfmTried: candidates,
+        youversionReference: parsedToDisplayRef(parsed) ?? ref,
+        html: `<div>${blocks.join("")}</div>`,
+        attempts,
+      };
+    }
 
     // Same-chapter verse range fallback: fetch chapter and trim
     if (verseStart !== undefined && (chapterEnd === undefined || chapterEnd === chapterStart)) {
       const chapId = `${bookUsfm}.${chapterStart}`;
       const fetchedChap = await fetchByPassageId(chapId, ref, bibleId, appKey);
-      attempts.push(fetchedChap.attempts);
+      attempts.push(fetchedChap.attempt);
 
       if (fetchedChap.ok) {
         const trimmed = trimChapterHtmlToRange(fetchedChap.content, verseStart, verseEnd);
@@ -686,21 +651,21 @@ async function fetchPassageHtmlSingle(
           ref,
           chosenUsfm: chapId,
           usfmTried: candidates,
-          youversionReference: parsedToDisplayRef(parsed) ?? fetchedChap.reference,
+          youversionReference: fetchedChap.reference,
           html: trimmed,
           attempts,
         };
       }
     }
 
-    // Cross-chapter fallback: fetch both chapters and trim
-    const cross = isCrossChapterRef(ref);
+    // Cross-chapter verse range fallback
+    const cross = isCrossChapterVerseRange(ref);
     if (cross.isCross) {
       const startChapId = `${cross.bookUsfm}.${cross.chapterStart}`;
       const endChapId = `${cross.bookUsfm}.${cross.chapterEnd}`;
 
       const a = await fetchByPassageId(startChapId, ref, bibleId, appKey);
-      attempts.push(a.attempts);
+      attempts.push(a.attempt);
       if (!a.ok) {
         return {
           ok: false,
@@ -712,7 +677,7 @@ async function fetchPassageHtmlSingle(
       }
 
       const b = await fetchByPassageId(endChapId, ref, bibleId, appKey);
-      attempts.push(b.attempts);
+      attempts.push(b.attempt);
       if (!b.ok) {
         return {
           ok: false,
@@ -732,11 +697,7 @@ async function fetchPassageHtmlSingle(
         chosenUsfm: `${startChapId}+${endChapId}`,
         usfmTried: candidates,
         youversionReference: ref,
-        html: `<div>
-          <div style="margin:12px 0 6px;font-weight:700;">${escapeHtml(ref)} (split)</div>
-          ${trimmedA}
-          ${trimmedB}
-        </div>`,
+        html: `<div>${trimmedA}${trimmedB}</div>`,
         attempts,
       };
     }
@@ -746,35 +707,9 @@ async function fetchPassageHtmlSingle(
     ok: false,
     ref,
     usfmTried: candidates,
-    error: {
-      status: 404,
-      message: `Bible passage not found for version ${bibleId}`,
-    },
+    error: { status: 404, message: `Bible passage not found for version ${bibleId}` },
     attempts,
   };
-}
-
-/**
- * Build a reasonable display ref from ParsedRef.
- * This fixes cases where YouVersion's chapter fetch reference doesn't include the requested range.
- */
-function parsedToDisplayRef(p: ParsedRef): string | null {
-  const bookName = usfmToBestEnglishBook(p.bookUsfm);
-  const c1 = p.chapterStart;
-  const v1 = p.verseStart;
-  const c2 = p.chapterEnd;
-  const v2 = p.verseEnd;
-
-  if (!v1) return `${bookName} ${c1}`;
-
-  if (!c2 && !v2) return `${bookName} ${c1}:${v1}`;
-
-  const endC = c2 ?? c1;
-  const endV = v2 ?? v1;
-
-  if (endC === c1) return `${bookName} ${c1}:${v1}-${endV}`;
-
-  return `${bookName} ${c1}:${v1}-${endC}:${endV}`;
 }
 
 export async function GET(req: Request) {
@@ -836,11 +771,7 @@ export async function GET(req: Request) {
     const resOne = await fetchPassageHtmlSingle(p, bibleId, appKey);
 
     if (!resOne.ok) {
-      debugParts.push({
-        ref: p,
-        usfmTried: resOne.usfmTried,
-        ok: false,
-      });
+      debugParts.push({ ref: p, usfmTried: resOne.usfmTried, ok: false });
 
       return NextResponse.json(
         {
