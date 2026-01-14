@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 
 type ProfileMini = {
   id: string;
-  display_name: string | null;
+  display_name: string;
 };
 
 type Msg = {
@@ -17,15 +17,11 @@ type Msg = {
   profiles?: ProfileMini | ProfileMini[] | null;
 };
 
-function pickProfile(p: Msg["profiles"]): ProfileMini | null {
+function getDisplayName(m: Msg): string | null {
+  const p = m.profiles;
   if (!p) return null;
-  if (Array.isArray(p)) return p[0] ?? null;
-  return p;
-}
-
-function displayNameFor(m: Msg, fallback = "Unknown") {
-  const p = pickProfile(m.profiles);
-  return p?.display_name?.trim() ? p.display_name : fallback;
+  if (Array.isArray(p)) return p[0]?.display_name ?? null;
+  return p.display_name ?? null;
 }
 
 export default function LeadersChatClient() {
@@ -34,14 +30,10 @@ export default function LeadersChatClient() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const canSend = useMemo(
-    () => text.trim().length > 0 && !!userId && !sending,
-    [text, userId, sending]
-  );
+  const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
 
   useEffect(() => {
     async function load() {
@@ -59,17 +51,10 @@ export default function LeadersChatClient() {
 
       const { data, error } = await supabase
         .from("leader_messages")
-        .select(
-          `
-          id,
-          user_id,
-          body,
-          created_at,
-          profiles:profiles ( id, display_name )
-        `
-        )
+        // ✅ This now works once the FK points to public.profiles(id)
+        .select("id,user_id,body,created_at,profiles(id,display_name)")
         .order("created_at", { ascending: true })
-        .limit(150);
+        .limit(200);
 
       if (error) {
         setErr(error.message ?? "Failed to load messages");
@@ -85,16 +70,27 @@ export default function LeadersChatClient() {
   }, []);
 
   useEffect(() => {
+    // realtime subscribe for inserts
     const channel = supabase
       .channel("leaders_chat")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "leader_messages" },
-        (payload) => {
-          const incoming = payload.new as Msg;
+        async (payload) => {
+          const inserted = payload.new as { id: string };
+
+          // Re-fetch the inserted row including joined profile
+          const { data } = await supabase
+            .from("leader_messages")
+            .select("id,user_id,body,created_at,profiles(id,display_name)")
+            .eq("id", inserted.id)
+            .single();
+
+          if (!data) return;
+
           setMsgs((prev) => {
-            if (prev.some((x) => x.id === incoming.id)) return prev;
-            return [...prev, incoming];
+            if (prev.some((x) => x.id === data.id)) return prev;
+            return [...prev, data as Msg];
           });
         }
       )
@@ -112,44 +108,28 @@ export default function LeadersChatClient() {
   async function send() {
     setErr(null);
     const body = text.trim();
-    if (!body || !userId || sending) return;
+    if (!body || !userId) return;
 
-    setSending(true);
     setText("");
 
-    try {
-      const { data, error } = await supabase
-        .from("leader_messages")
-        .insert({
-          user_id: userId,
-          body,
-        })
-        .select(
-          `
-          id,
-          user_id,
-          body,
-          created_at,
-          profiles:profiles ( id, display_name )
-        `
-        )
-        .single();
+    const { data: inserted, error } = await supabase
+      .from("leader_messages")
+      .insert({ user_id: userId, body })
+      .select("id,user_id,body,created_at,profiles(id,display_name)")
+      .single();
 
-      if (error || !data) {
-        setErr(error?.message ?? "Failed to send");
-        setText(body);
-        return;
-      }
-
-      setMsgs((prev) => {
-        if (prev.some((x) => x.id === data.id)) return prev;
-        return [...prev, data as Msg];
-      });
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to send");
+    if (error) {
+      setErr(error.message ?? "Failed to send");
       setText(body);
-    } finally {
-      setSending(false);
+      return;
+    }
+
+    // ✅ immediate UI update (no refresh)
+    if (inserted) {
+      setMsgs((prev) => {
+        if (prev.some((m) => m.id === inserted.id)) return prev;
+        return [...prev, inserted as Msg];
+      });
     }
   }
 
@@ -185,7 +165,6 @@ export default function LeadersChatClient() {
     padding: "10px 12px",
     cursor: "pointer",
     whiteSpace: "nowrap",
-    opacity: canSend ? 1 : 0.6,
   };
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
@@ -211,15 +190,19 @@ export default function LeadersChatClient() {
           <div style={{ opacity: 0.8 }}>No messages yet.</div>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
-            {msgs.map((m) => (
-              <div key={m.id} style={{ opacity: 0.95 }}>
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  {new Date(m.created_at).toLocaleString()} •{" "}
-                  {m.user_id === userId ? "You" : displayNameFor(m, "Unknown")}
+            {msgs.map((m) => {
+              const name =
+                m.user_id === userId ? "You" : (getDisplayName(m) ?? "Unknown");
+
+              return (
+                <div key={m.id} style={{ opacity: 0.95 }}>
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>
+                    {new Date(m.created_at).toLocaleString()} • {name}
+                  </div>
+                  <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
                 </div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
-              </div>
-            ))}
+              );
+            })}
             <div ref={bottomRef} />
           </div>
         )}
@@ -243,10 +226,9 @@ export default function LeadersChatClient() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
             }}
-            disabled={sending}
           />
           <button style={btn} disabled={!canSend} onClick={send}>
-            {sending ? "Sending…" : "Send"}
+            Send
           </button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
