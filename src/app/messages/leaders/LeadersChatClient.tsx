@@ -4,24 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
-type ProfileMini = {
-  id: string;
-  display_name: string | null;
-};
-
 type Msg = {
   id: string;
   user_id: string;
   body: string;
   created_at: string;
-  // ✅ Supabase is giving an array here in your project
-  profiles: ProfileMini[] | null;
 };
 
-function getDisplayName(m: Msg, currentUserId: string | null) {
-  if (m.user_id === currentUserId) return "You";
-  return m.profiles?.[0]?.display_name ?? "Unknown";
-}
+type ProfileMini = {
+  id: string;
+  display_name: string | null;
+};
 
 export default function LeadersChatClient() {
   const [loading, setLoading] = useState(true);
@@ -30,9 +23,74 @@ export default function LeadersChatClient() {
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
+  // user_id -> display_name
+  const [nameById, setNameById] = useState<Record<string, string>>({});
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
+
+  function displayNameFor(uid: string) {
+    const name = nameById[uid];
+    if (name && name.trim()) return name.trim();
+    return uid === userId ? "You" : "Unknown";
+  }
+
+  async function hydrateNamesFromMessages(list: Msg[]) {
+    const ids = Array.from(
+      new Set(list.map((m) => m.user_id).filter(Boolean))
+    );
+
+    // Only fetch what we don't already have
+    const missing = ids.filter((id) => !nameById[id]);
+    if (missing.length === 0) return;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,display_name")
+      .in("id", missing);
+
+    if (error) {
+      // don't hard fail the chat just because names couldn't load
+      console.warn("hydrateNames leader chat error:", error);
+      return;
+    }
+
+    const rows = (data ?? []) as ProfileMini[];
+    setNameById((prev) => {
+      const next = { ...prev };
+      for (const r of rows) {
+        next[String(r.id)] = String(r.display_name ?? "").trim();
+      }
+      return next;
+    });
+  }
+
+  async function hydrateNameForUserId(uid: string) {
+    if (!uid) return;
+    if (nameById[uid]) return;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,display_name")
+      .eq("id", uid)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("hydrateNameForUserId error:", error);
+      return;
+    }
+
+    if (data?.id) {
+      setNameById((prev) => ({
+        ...prev,
+        [String(data.id)]: String(data.display_name ?? "").trim(),
+      }));
+    } else {
+      // ensure we don't refetch repeatedly
+      setNameById((prev) => ({ ...prev, [uid]: "" }));
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -48,21 +106,9 @@ export default function LeadersChatClient() {
         return;
       }
 
-      // ✅ Load last 100 messages WITH display names
       const { data, error } = await supabase
         .from("leader_messages")
-        .select(
-          `
-          id,
-          user_id,
-          body,
-          created_at,
-          profiles (
-            id,
-            display_name
-          )
-        `
-        )
+        .select("id,user_id,body,created_at")
         .order("created_at", { ascending: true })
         .limit(100);
 
@@ -72,57 +118,28 @@ export default function LeadersChatClient() {
         return;
       }
 
-      // ✅ Normalize to Msg shape (profiles is array)
-      const normalized: Msg[] = (data ?? []).map((row: any) => ({
-        id: String(row.id),
-        user_id: String(row.user_id),
-        body: String(row.body ?? ""),
-        created_at: String(row.created_at),
-        profiles: Array.isArray(row.profiles)
-          ? row.profiles.map((p: any) => ({
-              id: String(p.id),
-              display_name: p.display_name == null ? null : String(p.display_name),
-            }))
-          : null,
-      }));
+      const list = (data ?? []) as Msg[];
+      setMsgs(list);
+      await hydrateNamesFromMessages(list);
 
-      setMsgs(normalized);
       setLoading(false);
     }
 
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    // ✅ Realtime inserts (payload doesn't include join) → fetch profile for inserted user_id
     const channel = supabase
       .channel("leaders_chat")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "leader_messages" },
         async (payload) => {
-          const base = payload.new as {
-            id: string;
-            user_id: string;
-            body: string;
-            created_at: string;
-          };
-
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("id,display_name")
-            .eq("id", base.user_id)
-            .single();
-
-          const newMsg: Msg = {
-            id: base.id,
-            user_id: base.user_id,
-            body: base.body,
-            created_at: base.created_at,
-            profiles: profile ? [{ id: String(profile.id), display_name: profile.display_name }] : null,
-          };
-
-          setMsgs((prev) => [...prev, newMsg]);
+          const m = payload.new as Msg;
+          setMsgs((prev) => [...prev, m]);
+          // try to fetch name for this sender if missing
+          hydrateNameForUserId(m.user_id);
         }
       )
       .subscribe();
@@ -130,7 +147,8 @@ export default function LeadersChatClient() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, nameById]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -202,7 +220,9 @@ export default function LeadersChatClient() {
         </div>
       </div>
 
-      {err && <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>}
+      {err && (
+        <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>
+      )}
 
       <div style={{ ...surface, flex: 1, overflow: "auto" }}>
         {msgs.length === 0 ? (
@@ -212,7 +232,8 @@ export default function LeadersChatClient() {
             {msgs.map((m) => (
               <div key={m.id} style={{ opacity: 0.95 }}>
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  {new Date(m.created_at).toLocaleString()} • {getDisplayName(m, userId)}
+                  {new Date(m.created_at).toLocaleString()} •{" "}
+                  {m.user_id === userId ? "You" : displayNameFor(m.user_id)}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
               </div>

@@ -4,25 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+type Msg = {
+  id: string;
+  group_id: string;
+  user_id: string;
+  body: string;
+  created_at: string;
+};
+
 type ProfileMini = {
   id: string;
   display_name: string | null;
 };
-
-type Msg = {
-  id: string;
-  group_id?: string;
-  user_id: string;
-  body: string;
-  created_at: string;
-  // ✅ Supabase is giving an array here in your project
-  profiles: ProfileMini[] | null;
-};
-
-function getDisplayName(m: Msg, currentUserId: string | null) {
-  if (m.user_id === currentUserId) return "You";
-  return m.profiles?.[0]?.display_name ?? "Unknown";
-}
 
 export default function GroupChatClient({ groupId }: { groupId: string }) {
   const [loading, setLoading] = useState(true);
@@ -32,9 +25,69 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
+  // user_id -> display_name
+  const [nameById, setNameById] = useState<Record<string, string>>({});
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
+
+  function displayNameFor(uid: string) {
+    const name = nameById[uid];
+    if (name && name.trim()) return name.trim();
+    return uid === userId ? "You" : "Unknown";
+  }
+
+  async function hydrateNamesFromMessages(list: Msg[]) {
+    const ids = Array.from(new Set(list.map((m) => m.user_id).filter(Boolean)));
+    const missing = ids.filter((id) => !nameById[id]);
+    if (missing.length === 0) return;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,display_name")
+      .in("id", missing);
+
+    if (error) {
+      console.warn("hydrateNames group chat error:", error);
+      return;
+    }
+
+    const rows = (data ?? []) as ProfileMini[];
+    setNameById((prev) => {
+      const next = { ...prev };
+      for (const r of rows) {
+        next[String(r.id)] = String(r.display_name ?? "").trim();
+      }
+      return next;
+    });
+  }
+
+  async function hydrateNameForUserId(uid: string) {
+    if (!uid) return;
+    if (nameById[uid]) return;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,display_name")
+      .eq("id", uid)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("hydrateNameForUserId error:", error);
+      return;
+    }
+
+    if (data?.id) {
+      setNameById((prev) => ({
+        ...prev,
+        [String(data.id)]: String(data.display_name ?? "").trim(),
+      }));
+    } else {
+      // prevent repeated refetching
+      setNameById((prev) => ({ ...prev, [uid]: "" }));
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -50,7 +103,7 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
         return;
       }
 
-      // Group name (member-only by RLS)
+      // group name
       const { data: g, error: gErr } = await supabase
         .from("groups")
         .select("name")
@@ -59,22 +112,9 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
 
       if (!gErr && g?.name) setGroupName(g.name);
 
-      // ✅ Load last 100 messages WITH display names
       const { data, error } = await supabase
         .from("group_messages")
-        .select(
-          `
-          id,
-          group_id,
-          user_id,
-          body,
-          created_at,
-          profiles (
-            id,
-            display_name
-          )
-        `
-        )
+        .select("id,group_id,user_id,body,created_at")
         .eq("group_id", groupId)
         .order("created_at", { ascending: true })
         .limit(100);
@@ -85,30 +125,18 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
         return;
       }
 
-      // ✅ Normalize to Msg shape (profiles is array)
-      const normalized: Msg[] = (data ?? []).map((row: any) => ({
-        id: String(row.id),
-        group_id: String(row.group_id ?? ""),
-        user_id: String(row.user_id),
-        body: String(row.body ?? ""),
-        created_at: String(row.created_at),
-        profiles: Array.isArray(row.profiles)
-          ? row.profiles.map((p: any) => ({
-              id: String(p.id),
-              display_name: p.display_name == null ? null : String(p.display_name),
-            }))
-          : null,
-      }));
+      const list = (data ?? []) as Msg[];
+      setMsgs(list);
+      await hydrateNamesFromMessages(list);
 
-      setMsgs(normalized);
       setLoading(false);
     }
 
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
   useEffect(() => {
-    // ✅ Realtime inserts (payload doesn't include join) → fetch profile for inserted user_id
     const channel = supabase
       .channel(`group_chat:${groupId}`)
       .on(
@@ -119,31 +147,10 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
           table: "group_messages",
           filter: `group_id=eq.${groupId}`,
         },
-        async (payload) => {
-          const base = payload.new as {
-            id: string;
-            group_id: string;
-            user_id: string;
-            body: string;
-            created_at: string;
-          };
-
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("id,display_name")
-            .eq("id", base.user_id)
-            .single();
-
-          const newMsg: Msg = {
-            id: base.id,
-            group_id: base.group_id,
-            user_id: base.user_id,
-            body: base.body,
-            created_at: base.created_at,
-            profiles: profile ? [{ id: String(profile.id), display_name: profile.display_name }] : null,
-          };
-
-          setMsgs((prev) => [...prev, newMsg]);
+        (payload) => {
+          const m = payload.new as Msg;
+          setMsgs((prev) => [...prev, m]);
+          hydrateNameForUserId(m.user_id);
         }
       )
       .subscribe();
@@ -151,7 +158,8 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [groupId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, userId, nameById]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -217,8 +225,6 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
     <div style={pageWrap}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>{groupName} Chat</h1>
-
-        {/* ✅ Single back button */}
         <div style={{ marginLeft: "auto" }}>
           <Link href="/messages" style={{ opacity: 0.85 }}>
             ← Back
@@ -226,7 +232,9 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
         </div>
       </div>
 
-      {err && <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>}
+      {err && (
+        <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>
+      )}
 
       <div style={{ ...surface, flex: 1, overflow: "auto" }}>
         {msgs.length === 0 ? (
@@ -236,7 +244,8 @@ export default function GroupChatClient({ groupId }: { groupId: string }) {
             {msgs.map((m) => (
               <div key={m.id} style={{ opacity: 0.95 }}>
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  {new Date(m.created_at).toLocaleString()} • {getDisplayName(m, userId)}
+                  {new Date(m.created_at).toLocaleString()} •{" "}
+                  {m.user_id === userId ? "You" : displayNameFor(m.user_id)}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
               </div>
