@@ -2,85 +2,121 @@
 
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
-function randomCode(len = 10) {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return out;
-}
-
 export async function createGroup(input: { name: string; start_date: string; timezone: string }) {
   const supabase = await createSupabaseServerClient();
+  const { data: au } = await supabase.auth.getUser();
+  if (!au.user) throw new Error("Not authenticated");
 
-  const { data: userData, error: userErr } = await supabase.auth.getUser();
-  if (userErr || !userData.user) throw new Error("Not signed in");
+  const n = input.name.trim();
+  if (!n) throw new Error("Group name required");
 
-  // OPTIONAL STRICT MODE:
-  // If you truly want "only existing leaders can create new groups",
-  // uncomment this check.
-  const { data: leaderCheck } = await supabase
-    .from("group_memberships")
-    .select("role")
-    .eq("user_id", userData.user.id)
-    .eq("role", "leader")
-    .limit(1);
-
-  if (!leaderCheck || leaderCheck.length === 0) {
-    throw new Error("Only leaders can create groups.");
-  }
-
-  const { data: group, error: gErr } = await supabase
+  const { data: g, error: gErr } = await supabase
     .from("groups")
     .insert({
-      name: input.name,
+      name: n,
       start_date: input.start_date,
       timezone: input.timezone,
-      created_by: userData.user.id,
+      created_by: au.user.id,
     })
-    .select("id,name,start_date,timezone")
+    .select("id")
     .single();
 
   if (gErr) throw new Error(gErr.message);
 
-  // Make creator the leader of the new group
   const { error: mErr } = await supabase.from("group_memberships").insert({
-    group_id: group.id,
-    user_id: userData.user.id,
+    group_id: g.id,
+    user_id: au.user.id,
     role: "leader",
   });
-
   if (mErr) throw new Error(mErr.message);
 
-  return { group };
+  return { id: g.id as string };
 }
 
 export async function createInviteForGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: au } = await supabase.auth.getUser();
+  if (!au.user) throw new Error("Not authenticated");
 
-  const { data: userData, error: userErr } = await supabase.auth.getUser();
-  if (userErr || !userData.user) throw new Error("Not signed in");
-
-  // Ensure caller is leader of that group
-  const { data: mem, error: memErr } = await supabase
+  // Leader check
+  const { data: gm, error: gmErr } = await supabase
     .from("group_memberships")
     .select("role")
     .eq("group_id", groupId)
-    .eq("user_id", userData.user.id)
+    .eq("user_id", au.user.id)
     .single();
 
-  if (memErr || !mem) throw new Error("Not a member of this group");
-  if (mem.role !== "leader") throw new Error("Only leaders can create invites for this group");
+  if (gmErr || !gm || gm.role !== "leader") throw new Error("Leader access required");
 
-  const code = randomCode(10);
-
-  const { error } = await supabase.from("invites").insert({
-    group_id: groupId,
-    invite_code: code,
-    created_by: userData.user.id,
-    // optionally: expires_at, max_uses, uses
-  });
+  const { data, error } = await supabase
+    .from("invites")
+    .insert({
+      group_id: groupId,
+      created_by: au.user.id,
+      is_active: true,
+    })
+    .select("invite_code")
+    .single();
 
   if (error) throw new Error(error.message);
 
-  return { code };
+  // best-effort audit (won't block invite)
+  try {
+    await supabase.from("invite_audit").insert({
+      event: "invite_created",
+      group_id: groupId,
+      invite_code: data.invite_code,
+      actor_user_id: au.user.id,
+      target_user_id: null,
+    });
+  } catch {}
+
+  return { code: data.invite_code as string };
+}
+
+export async function revokeInvite(inviteCode: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: au } = await supabase.auth.getUser();
+  if (!au.user) throw new Error("Not authenticated");
+
+  const code = inviteCode.trim().toUpperCase();
+
+  // Find invite to get group_id
+  const { data: inv, error: iErr } = await supabase
+    .from("invites")
+    .select("group_id, invite_code")
+    .eq("invite_code", code)
+    .single();
+
+  if (iErr || !inv) throw new Error("Invite not found");
+
+  // Leader check
+  const { data: gm, error: gmErr } = await supabase
+    .from("group_memberships")
+    .select("role")
+    .eq("group_id", inv.group_id)
+    .eq("user_id", au.user.id)
+    .single();
+
+  if (gmErr || !gm || gm.role !== "leader") throw new Error("Leader access required");
+
+  const { error } = await supabase
+    .from("invites")
+    .update({ is_active: false })
+    .eq("invite_code", code);
+
+  if (error) throw new Error(error.message);
+
+  // best-effort audit
+  try {
+    await supabase.from("invite_audit").insert({
+      event: "invite_revoked",
+      group_id: inv.group_id,
+      invite_code: code,
+      actor_user_id: au.user.id,
+      target_user_id: null,
+    });
+  } catch {}
+
+  return { ok: true };
 }
