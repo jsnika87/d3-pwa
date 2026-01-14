@@ -4,39 +4,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+type ProfileMini = {
+  id: string;
+  display_name: string | null;
+};
+
 type Msg = {
   id: string;
   user_id: string;
   body: string;
   created_at: string;
+  // ✅ Supabase is giving an array here in your project
+  profiles: ProfileMini[] | null;
 };
 
-type ProfileRow = {
-  id: string;
-  display_name?: string | null;
-  full_name?: string | null;
-  name?: string | null;
-  email?: string | null;
-};
-
-function pickBestName(p?: ProfileRow | null, fallbackId?: string) {
-  const name =
-    p?.display_name ||
-    p?.full_name ||
-    p?.name ||
-    p?.email ||
-    (fallbackId ? fallbackId : "Unknown");
-  return name;
-}
-
-function isNetworkishError(err: any) {
-  const msg = String(err?.message ?? "").toLowerCase();
-  return (
-    msg.includes("failed to fetch") ||
-    msg.includes("internet_disconnected") ||
-    msg.includes("network") ||
-    msg.includes("offline")
-  );
+function getDisplayName(m: Msg, currentUserId: string | null) {
+  if (m.user_id === currentUserId) return "You";
+  return m.profiles?.[0]?.display_name ?? "Unknown";
 }
 
 export default function LeadersChatClient() {
@@ -45,42 +29,10 @@ export default function LeadersChatClient() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-
-  const [userLabels, setUserLabels] = useState<Record<string, string>>({});
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const canSend = useMemo(
-    () => text.trim().length > 0 && !!userId && !sending,
-    [text, userId, sending]
-  );
-
-  function scrollToBottom() {
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 0);
-  }
-
-  async function ensureProfiles(ids: string[]) {
-    const unique = Array.from(new Set(ids)).filter(Boolean);
-    const missing = unique.filter((id) => !userLabels[id]);
-    if (missing.length === 0) return;
-
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id,display_name,full_name,name,email")
-      .in("id", missing);
-
-    if (error) return;
-
-    const rows = (data ?? []) as ProfileRow[];
-    const next: Record<string, string> = {};
-
-    for (const r of rows) {
-      next[r.id] = pickBestName(r, r.id);
-    }
-
-    setUserLabels((prev) => ({ ...prev, ...next }));
-  }
+  const canSend = useMemo(() => text.trim().length > 0 && !!userId, [text, userId]);
 
   useEffect(() => {
     async function load() {
@@ -96,54 +48,81 @@ export default function LeadersChatClient() {
         return;
       }
 
-      try {
-        const { data, error } = await supabase
-          .from("leader_messages")
-          .select("id,user_id,body,created_at")
-          .order("created_at", { ascending: true })
-          .limit(200);
+      // ✅ Load last 100 messages WITH display names
+      const { data, error } = await supabase
+        .from("leader_messages")
+        .select(
+          `
+          id,
+          user_id,
+          body,
+          created_at,
+          profiles (
+            id,
+            display_name
+          )
+        `
+        )
+        .order("created_at", { ascending: true })
+        .limit(100);
 
-        if (error) throw error;
-
-        const loaded = (data ?? []) as Msg[];
-        setMsgs(loaded);
-
-        await ensureProfiles(loaded.map((m) => m.user_id).concat(uid));
-
+      if (error) {
+        setErr(error.message ?? "Failed to load messages");
         setLoading(false);
-        scrollToBottom();
-      } catch (e: any) {
-        setLoading(false);
-
-        if (isNetworkishError(e)) {
-          setErr("You’re offline. Leaders chat needs internet (for now).");
-        } else {
-          setErr(e?.message ?? "Failed to load messages");
-        }
+        return;
       }
+
+      // ✅ Normalize to Msg shape (profiles is array)
+      const normalized: Msg[] = (data ?? []).map((row: any) => ({
+        id: String(row.id),
+        user_id: String(row.user_id),
+        body: String(row.body ?? ""),
+        created_at: String(row.created_at),
+        profiles: Array.isArray(row.profiles)
+          ? row.profiles.map((p: any) => ({
+              id: String(p.id),
+              display_name: p.display_name == null ? null : String(p.display_name),
+            }))
+          : null,
+      }));
+
+      setMsgs(normalized);
+      setLoading(false);
     }
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    // ✅ Realtime inserts (payload doesn't include join) → fetch profile for inserted user_id
     const channel = supabase
       .channel("leaders_chat")
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "leader_messages" },
         async (payload) => {
-          const m = payload.new as Msg;
+          const base = payload.new as {
+            id: string;
+            user_id: string;
+            body: string;
+            created_at: string;
+          };
 
-          setMsgs((prev) => {
-            if (prev.some((x) => x.id === m.id)) return prev;
-            return [...prev, m];
-          });
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("id,display_name")
+            .eq("id", base.user_id)
+            .single();
 
-          await ensureProfiles([m.user_id]);
+          const newMsg: Msg = {
+            id: base.id,
+            user_id: base.user_id,
+            body: base.body,
+            created_at: base.created_at,
+            profiles: profile ? [{ id: String(profile.id), display_name: profile.display_name }] : null,
+          };
 
-          scrollToBottom();
+          setMsgs((prev) => [...prev, newMsg]);
         }
       )
       .subscribe();
@@ -151,12 +130,10 @@ export default function LeadersChatClient() {
     return () => {
       supabase.removeChannel(channel);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userLabels]);
+  }, []);
 
   useEffect(() => {
-    scrollToBottom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs.length]);
 
   async function send() {
@@ -164,49 +141,16 @@ export default function LeadersChatClient() {
     const body = text.trim();
     if (!body || !userId) return;
 
-    setSending(true);
     setText("");
 
-    const tempId = `temp-${Date.now()}`;
-    const optimistic: Msg = {
-      id: tempId,
+    const { error } = await supabase.from("leader_messages").insert({
       user_id: userId,
       body,
-      created_at: new Date().toISOString(),
-    };
+    });
 
-    setMsgs((prev) => [...prev, optimistic]);
-    scrollToBottom();
-
-    try {
-      const { data, error } = await supabase
-        .from("leader_messages")
-        .insert({
-          user_id: userId,
-          body,
-        })
-        .select("id,user_id,body,created_at")
-        .single();
-
-      if (error) throw error;
-
-      const saved = data as Msg;
-      setMsgs((prev) => prev.map((m) => (m.id === tempId ? saved : m)));
-
-      await ensureProfiles([userId]);
-
-      scrollToBottom();
-    } catch (e: any) {
-      setMsgs((prev) => prev.filter((m) => m.id !== tempId));
+    if (error) {
+      setErr(error.message ?? "Failed to send");
       setText(body);
-
-      if (isNetworkishError(e)) {
-        setErr("You’re offline — message not sent.");
-      } else {
-        setErr(e?.message ?? "Failed to send");
-      }
-    } finally {
-      setSending(false);
     }
   }
 
@@ -242,7 +186,6 @@ export default function LeadersChatClient() {
     padding: "10px 12px",
     cursor: "pointer",
     whiteSpace: "nowrap",
-    opacity: canSend ? 1 : 0.6,
   };
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>;
@@ -259,31 +202,21 @@ export default function LeadersChatClient() {
         </div>
       </div>
 
-      {err && (
-        <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>
-      )}
+      {err && <div style={{ ...surface, borderColor: "rgba(255,120,120,0.35)" }}>{err}</div>}
 
       <div style={{ ...surface, flex: 1, overflow: "auto" }}>
         {msgs.length === 0 ? (
           <div style={{ opacity: 0.8 }}>No messages yet.</div>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
-            {msgs.map((m) => {
-              const who =
-                m.user_id === userId
-                  ? "You"
-                  : userLabels[m.user_id] || pickBestName(null, m.user_id);
-
-              return (
-                <div key={m.id} style={{ opacity: m.id.startsWith("temp-") ? 0.7 : 0.95 }}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>
-                    {new Date(m.created_at).toLocaleString()} • {who}
-                    {m.id.startsWith("temp-") ? " (sending…)" : ""}
-                  </div>
-                  <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
+            {msgs.map((m) => (
+              <div key={m.id} style={{ opacity: 0.95 }}>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  {new Date(m.created_at).toLocaleString()} • {getDisplayName(m, userId)}
                 </div>
-              );
-            })}
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.body}</div>
+              </div>
+            ))}
             <div ref={bottomRef} />
           </div>
         )}
@@ -309,7 +242,7 @@ export default function LeadersChatClient() {
             }}
           />
           <button style={btn} disabled={!canSend} onClick={send}>
-            {sending ? "Sending…" : "Send"}
+            Send
           </button>
         </div>
         <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
