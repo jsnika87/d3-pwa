@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { createGroup, createInviteForGroup, revokeInvite } from "./actions";
-import { setRoleByEmail } from "./[groupId]/memberActions";
+import { createGroup, createInviteForGroup } from "./actions";
 import { isOnline } from "@/lib/offlineQueue";
+import { setUserRoleAllGroups } from "./roleActions";
 
 type Group = {
   id: string;
@@ -19,13 +19,10 @@ type Membership = {
   group: Group;
 };
 
-type InviteRow = {
-  invite_code: string;
-  created_at: string;
-  uses: number | null;
-  max_uses: number | null;
-  expires_at: string | null;
-  is_active: boolean;
+type ProfileMini = {
+  id: string;
+  display_name: string | null;
+  email: string | null;
 };
 
 function normalizeGroup(m: any): Group | null {
@@ -39,25 +36,10 @@ function normalizeGroup(m: any): Group | null {
   };
 }
 
-function buildInviteUrl(code: string) {
-  if (typeof window === "undefined") return `/join/${code}`;
-  return `${window.location.origin}/join/${code}`;
-}
-
 export default function GroupsClient() {
   const [loading, setLoading] = useState(true);
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [errMsg, setErrMsg] = useState<string | null>(null);
-
-  // auth
-  const [userId, setUserId] = useState<string | null>(null);
-
-  // ---- Leader tool: update member role (choose group + email + role) ----
-  const [selectedLeaderGroupId, setSelectedLeaderGroupId] = useState<string>("");
-  const [roleEmail, setRoleEmail] = useState("");
-  const [roleValue, setRoleValue] = useState<"member" | "leader">("leader");
-  const [roleSaving, setRoleSaving] = useState(false);
-  const [roleMsg, setRoleMsg] = useState<string | null>(null);
 
   // ---- Leader tool: create group ----
   const [newGroupName, setNewGroupName] = useState("");
@@ -65,14 +47,17 @@ export default function GroupsClient() {
   const [newGroupTz, setNewGroupTz] = useState("America/Chicago");
   const [creatingGroup, setCreatingGroup] = useState(false);
 
-  // ---- Invite quick output ----
+  // ---- Leader tool: invite ----
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [inviteBusy, setInviteBusy] = useState<string | null>(null); // groupId
 
-  // ---- Invite management (list + revoke) ----
-  const [invitesLoading, setInvitesLoading] = useState(false);
-  const [invites, setInvites] = useState<InviteRow[]>([]);
-  const [revokeBusyCode, setRevokeBusyCode] = useState<string | null>(null);
+  // ---- Leader tool: global role mgmt ----
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [allProfiles, setAllProfiles] = useState<ProfileMini[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string>("");
+  const [roleValue, setRoleValue] = useState<"member" | "leader">("leader");
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [roleMsg, setRoleMsg] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -80,8 +65,7 @@ export default function GroupsClient() {
       setErrMsg(null);
 
       const { data: sessionData } = await supabase.auth.getSession();
-      const uid = sessionData.session?.user?.id ?? null;
-      setUserId(uid);
+      const uid = sessionData.session?.user?.id;
 
       if (!uid) {
         setMemberships([]);
@@ -117,24 +101,15 @@ export default function GroupsClient() {
       for (const r of rows) {
         const g = normalizeGroup(r);
         if (!g) continue;
-
         const role = (r?.role === "leader" ? "leader" : "member") as "leader" | "member";
         next.push({ role, group: g });
       }
 
       setMemberships(next);
-
-      // pick default leader group for tools
-      const firstLeader = next.find((m) => m.role === "leader");
-      if (firstLeader && !selectedLeaderGroupId) {
-        setSelectedLeaderGroupId(firstLeader.group.id);
-      }
-
       setLoading(false);
     }
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const leaderMemberships = useMemo(
@@ -144,142 +119,115 @@ export default function GroupsClient() {
 
   const isLeaderAnywhere = leaderMemberships.length > 0;
 
-  const selectedLeaderGroup = useMemo(() => {
-    return leaderMemberships.find((m) => m.group.id === selectedLeaderGroupId) ?? null;
-  }, [leaderMemberships, selectedLeaderGroupId]);
-
-  async function logout() {
-    try {
-      await supabase.auth.signOut();
-      window.location.href = "/login";
-    } catch (e: any) {
-      setErrMsg(e?.message ?? "Failed to logout");
-    }
-  }
-
-  async function refreshInvites(groupId: string) {
-    if (!groupId) return;
-    if (!isOnline()) return;
-
-    setInvitesLoading(true);
-    setErrMsg(null);
-    try {
-      const { data, error } = await supabase
-        .from("invites")
-        .select("invite_code,created_at,uses,max_uses,expires_at,is_active")
-        .eq("group_id", groupId)
-        .eq("is_active", true)
-        .order("created_at", { ascending: false })
-        .limit(25);
-
-      if (error) throw error;
-
-      setInvites((data ?? []) as InviteRow[]);
-    } catch (e: any) {
-      setErrMsg(e?.message ?? "Failed to load invites");
-      setInvites([]);
-    } finally {
-      setInvitesLoading(false);
-    }
-  }
-
-  // auto-load invites for the selected leader group
+  // Load all profiles (active users) for dropdown
   useEffect(() => {
-    if (!isLeaderAnywhere) return;
-    if (!selectedLeaderGroupId) return;
-    if (!isOnline()) return;
+    async function loadProfiles() {
+      if (!isLeaderAnywhere) return;
 
-    refreshInvites(selectedLeaderGroupId);
+      setProfilesLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id,display_name,email")
+          .order("display_name", { ascending: true });
+
+        if (error) throw error;
+
+        const list = (data ?? []) as ProfileMini[];
+
+        const cleaned = list
+          .filter((p) => !!p?.id)
+          .map((p) => ({
+            id: String(p.id),
+            display_name: p.display_name ?? null,
+            email: p.email ?? null,
+          }));
+
+        setAllProfiles(cleaned);
+
+        if (!selectedUserId && cleaned.length > 0) {
+          setSelectedUserId(cleaned[0].id);
+        }
+      } catch (e: any) {
+        setErrMsg(e?.message ?? "Failed to load users");
+      } finally {
+        setProfilesLoading(false);
+      }
+    }
+
+    loadProfiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedLeaderGroupId, isLeaderAnywhere]);
+  }, [isLeaderAnywhere]);
 
-  // ---- Styles (now light+dark safe via CSS vars) ----
+  const selectedProfile = useMemo(() => {
+    return allProfiles.find((p) => p.id === selectedUserId) ?? null;
+  }, [allProfiles, selectedUserId]);
+
+  // ---- Styles ----
   const pageWrap: React.CSSProperties = {
     maxWidth: 900,
     margin: "0 auto",
     padding: 16,
-    color: "var(--fg)",
+    color: "rgba(255,255,255,0.92)",
   };
 
   const surface: React.CSSProperties = {
-    border: "1px solid var(--surface-border)",
+    border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: 12,
     padding: 12,
-    background: "var(--surface-bg)",
+    background: "rgba(255,255,255,0.04)",
   };
 
   const pillBtn: React.CSSProperties = {
-    border: "1px solid var(--btn-border)",
-    background: "var(--btn-bg)",
-    color: "var(--fg)",
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.06)",
+    color: "rgba(255,255,255,0.92)",
     borderRadius: 10,
     padding: "8px 10px",
     cursor: "pointer",
-    whiteSpace: "nowrap",
   };
 
   const inputStyle: React.CSSProperties = {
     padding: 10,
     borderRadius: 10,
-    border: "1px solid var(--input-border)",
-    background: "var(--input-bg)",
-    color: "var(--fg)",
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(0,0,0,0.25)",
+    color: "rgba(255,255,255,0.92)",
     outline: "none",
     width: "100%",
   };
 
-  if (loading) {
-    return <div style={pageWrap}>Loading…</div>;
-  }
+  if (loading) return <div style={pageWrap}>Loading…</div>;
 
   return (
     <div style={pageWrap}>
-      {/* Top row */}
       <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Your Groups</h1>
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
-          <Link href="/messages" style={{ textDecoration: "none" }}>
-            <button style={pillBtn}>💬 Messages</button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 12, opacity: 0.9 }}>
+          <Link href="/join" style={{ color: "rgba(255,255,255,0.92)" }}>
+            Join with code
           </Link>
-
-          <Link href="/join" style={{ textDecoration: "none" }}>
-            <button style={pillBtn}>Join with code</button>
-          </Link>
-
-          <button style={pillBtn} onClick={logout}>
-            Logout
-          </button>
         </div>
       </div>
 
-      {errMsg && (
-        <div style={{ marginTop: 10, color: "salmon" }}>
-          {errMsg}
-        </div>
-      )}
+      {errMsg && <div style={{ marginTop: 10, color: "salmon" }}>{errMsg}</div>}
 
-      {/* Groups list */}
       <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
         {memberships.length === 0 ? (
-          <div style={{ ...surface, opacity: 0.85 }}>
-            You’re not in any groups.
-          </div>
+          <div style={{ ...surface, opacity: 0.85 }}>You’re not in any groups.</div>
         ) : (
           memberships.map((m) => (
             <div key={m.group.id} style={{ ...surface }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ fontWeight: 900, fontSize: 16 }}>{m.group.name}</div>
-                <div style={{ opacity: 0.75, fontSize: 12 }}>
-                  ({m.role})
-                </div>
+                <div style={{ opacity: 0.75, fontSize: 12 }}>({m.role})</div>
 
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                  <Link href={`/groups/${m.group.id}`} style={{ textDecoration: "none" }}>
-                    <button style={pillBtn}>Open</button>
+                  <Link href={`/groups/${m.group.id}`} style={{ ...pillBtn, textDecoration: "none" }}>
+                    Open
                   </Link>
 
-                  {/* Leader-only invite button per group */}
                   {m.role === "leader" && (
                     <button
                       style={pillBtn}
@@ -289,19 +237,14 @@ export default function GroupsClient() {
                         setInviteBusy(m.group.id);
                         try {
                           const res = await createInviteForGroup(m.group.id);
-                          const url = buildInviteUrl(res.code);
+                          const url =
+                            typeof window !== "undefined"
+                              ? `${window.location.origin}/join/${res.code}`
+                              : `/join/${res.code}`;
 
-                          const msg =
-                            `Invite created for "${m.group.name}"\n` +
-                            `Code: ${res.code}\n` +
-                            `Link: ${url}`;
-
-                          setInviteMsg(msg);
-
-                          // refresh invite list if this is the selected leader group
-                          if (m.group.id === selectedLeaderGroupId) {
-                            await refreshInvites(m.group.id);
-                          }
+                          setInviteMsg(
+                            `Invite created for "${m.group.name}".\n\nCode: ${res.code}\nLink: ${url}`
+                          );
                         } catch (e: any) {
                           setInviteMsg(e?.message ?? "Failed to create invite");
                         } finally {
@@ -323,13 +266,11 @@ export default function GroupsClient() {
         )}
       </div>
 
-      {/* Quick invite output */}
       {inviteMsg && (
         <div style={{ marginTop: 12, ...surface }}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Invite</div>
-          <div style={{ opacity: 0.9, whiteSpace: "pre-wrap" }}>{inviteMsg}</div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ opacity: 0.85, whiteSpace: "pre-wrap" }}>{inviteMsg}</div>
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
             <button
               style={pillBtn}
               onClick={async () => {
@@ -340,28 +281,6 @@ export default function GroupsClient() {
             >
               Copy
             </button>
-
-            <button
-              style={pillBtn}
-              onClick={async () => {
-                // Share if available (mobile)
-                try {
-                  // Try to extract link
-                  const lines = inviteMsg.split("\n");
-                  const linkLine = lines.find((l) => l.startsWith("Link: "));
-                  const link = linkLine ? linkLine.replace("Link: ", "").trim() : "";
-
-                  // @ts-ignore
-                  if (navigator.share && link) {
-                    // @ts-ignore
-                    await navigator.share({ title: "D3 Invite", text: inviteMsg, url: link });
-                  }
-                } catch {}
-              }}
-            >
-              Share
-            </button>
-
             <button style={pillBtn} onClick={() => setInviteMsg(null)}>
               Clear
             </button>
@@ -369,7 +288,6 @@ export default function GroupsClient() {
         </div>
       )}
 
-      {/* Leader-only tools */}
       {isLeaderAnywhere && (
         <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
           {/* Create group */}
@@ -417,8 +335,6 @@ export default function GroupsClient() {
                       start_date: newGroupStart.trim(),
                       timezone: newGroupTz.trim(),
                     });
-
-                    // refresh list after create
                     window.location.reload();
                   } catch (e: any) {
                     setErrMsg(e?.message ?? "Failed to create group");
@@ -436,198 +352,29 @@ export default function GroupsClient() {
             </div>
           </div>
 
-          {/* Invite management */}
+          {/* Global role tool */}
           <div style={surface}>
             <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>
-              Invite Management
+              Leader Tools (Global Role)
             </div>
 
-            <div style={{ display: "grid", gap: 10, maxWidth: 620 }}>
+            <div style={{ display: "grid", gap: 10, maxWidth: 560 }}>
               <select
-                value={selectedLeaderGroupId}
-                onChange={(e) => setSelectedLeaderGroupId(e.target.value)}
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
                 style={inputStyle}
+                disabled={profilesLoading || allProfiles.length === 0}
               >
-                <option value="" disabled>
-                  Select a group…
-                </option>
-                {leaderMemberships.map((m) => (
-                  <option key={m.group.id} value={m.group.id}>
-                    {m.group.name}
-                  </option>
-                ))}
+                {allProfiles.length === 0 ? (
+                  <option value="">No users found</option>
+                ) : (
+                  allProfiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {(p.display_name && p.display_name.trim()) || p.email || p.id}
+                    </option>
+                  ))
+                )}
               </select>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button
-                  style={pillBtn}
-                  disabled={!isOnline() || !selectedLeaderGroupId}
-                  onClick={async () => {
-                    if (!selectedLeaderGroupId) return;
-                    try {
-                      const res = await createInviteForGroup(selectedLeaderGroupId);
-                      const url = buildInviteUrl(res.code);
-                      setInviteMsg(
-                        `Invite created for "${selectedLeaderGroup?.group.name ?? "Group"}"\n` +
-                          `Code: ${res.code}\n` +
-                          `Link: ${url}`
-                      );
-                      await refreshInvites(selectedLeaderGroupId);
-                    } catch (e: any) {
-                      setErrMsg(e?.message ?? "Failed to create invite");
-                    }
-                  }}
-                >
-                  Create invite for selected group
-                </button>
-
-                <button
-                  style={pillBtn}
-                  disabled={!isOnline() || !selectedLeaderGroupId || invitesLoading}
-                  onClick={() => refreshInvites(selectedLeaderGroupId)}
-                >
-                  {invitesLoading ? "Refreshing…" : "Refresh invites"}
-                </button>
-              </div>
-
-              {!isOnline() && (
-                <div style={{ opacity: 0.8, fontSize: 12 }}>
-                  You must be online to manage invites.
-                </div>
-              )}
-
-              {isOnline() && selectedLeaderGroupId && (
-                <div style={{ display: "grid", gap: 10 }}>
-                  {invitesLoading ? (
-                    <div style={{ opacity: 0.85 }}>Loading invites…</div>
-                  ) : invites.length === 0 ? (
-                    <div style={{ opacity: 0.85 }}>No active invites for this group.</div>
-                  ) : (
-                    invites.map((inv) => {
-                      const url = buildInviteUrl(inv.invite_code);
-                      const uses = inv.uses ?? 0;
-                      const max = inv.max_uses ?? null;
-                      const exp = inv.expires_at ? new Date(inv.expires_at).toLocaleString() : "never";
-
-                      return (
-                        <div key={inv.invite_code} style={{ ...surface }}>
-                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                            <div style={{ fontWeight: 900 }}>
-                              {inv.invite_code}
-                            </div>
-
-                            <div style={{ opacity: 0.75, fontSize: 12 }}>
-                              uses: {uses}
-                              {max !== null ? ` / ${max}` : ""} • expires: {exp}
-                            </div>
-
-                            <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              <button
-                                style={pillBtn}
-                                onClick={async () => {
-                                  try {
-                                    await navigator.clipboard.writeText(inv.invite_code);
-                                  } catch {}
-                                }}
-                              >
-                                Copy code
-                              </button>
-
-                              <button
-                                style={pillBtn}
-                                onClick={async () => {
-                                  try {
-                                    await navigator.clipboard.writeText(url);
-                                  } catch {}
-                                }}
-                              >
-                                Copy link
-                              </button>
-
-                              <button
-                                style={pillBtn}
-                                onClick={async () => {
-                                  try {
-                                    // @ts-ignore
-                                    if (navigator.share) {
-                                      // @ts-ignore
-                                      await navigator.share({
-                                        title: "D3 Invite",
-                                        text: `Join my group with code ${inv.invite_code}`,
-                                        url,
-                                      });
-                                    }
-                                  } catch {}
-                                }}
-                              >
-                                Share
-                              </button>
-
-                              <button
-                                style={pillBtn}
-                                disabled={revokeBusyCode === inv.invite_code}
-                                onClick={async () => {
-                                  setRevokeBusyCode(inv.invite_code);
-                                  setErrMsg(null);
-
-                                  // ✅ optimistic UI removal
-                                  setInvites((prev) => prev.filter((x) => x.invite_code !== inv.invite_code));
-
-                                  try {
-                                    await revokeInvite(inv.invite_code);
-                                    await refreshInvites(selectedLeaderGroupId);
-                                  } catch (e: any) {
-                                    // restore on failure by reloading list
-                                    setErrMsg(e?.message ?? "Failed to revoke invite");
-                                    await refreshInvites(selectedLeaderGroupId);
-                                  } finally {
-                                    setRevokeBusyCode(null);
-                                  }
-                                }}
-                              >
-                                {revokeBusyCode === inv.invite_code ? "Revoking…" : "Revoke"}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div style={{ marginTop: 6, opacity: 0.8, fontSize: 12 }}>
-                            Link: {url}
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Update member role (keep existing feature) */}
-          <div style={surface}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 8 }}>Leader Tools</div>
-
-            <div style={{ display: "grid", gap: 10, maxWidth: 520 }}>
-              <select
-                value={selectedLeaderGroupId}
-                onChange={(e) => setSelectedLeaderGroupId(e.target.value)}
-                style={inputStyle}
-              >
-                <option value="" disabled>
-                  Select a group…
-                </option>
-                {leaderMemberships.map((m) => (
-                  <option key={m.group.id} value={m.group.id}>
-                    {m.group.name}
-                  </option>
-                ))}
-              </select>
-
-              <input
-                placeholder="Member email (must already have an account)"
-                value={roleEmail}
-                onChange={(e) => setRoleEmail(e.target.value)}
-                style={inputStyle}
-              />
 
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <select
@@ -641,14 +388,16 @@ export default function GroupsClient() {
 
                 <button
                   style={pillBtn}
-                  disabled={roleSaving || !isOnline() || !selectedLeaderGroupId || !roleEmail.trim()}
+                  disabled={roleSaving || !isOnline() || !selectedUserId}
                   onClick={async () => {
                     setRoleMsg(null);
                     setRoleSaving(true);
                     try {
-                      await setRoleByEmail(selectedLeaderGroupId, roleEmail.trim(), roleValue);
-                      setRoleMsg(`Updated role to "${roleValue}" for ${roleEmail.trim()}`);
-                      setRoleEmail("");
+                      const updated = await setUserRoleAllGroups(selectedUserId, roleValue);
+                      setRoleMsg(
+                        `Updated "${selectedProfile?.display_name ?? selectedProfile?.email ?? selectedUserId
+                        }" to "${roleValue}" in ${updated} group(s).`
+                      );
                     } catch (e: any) {
                       setRoleMsg(e?.message ?? "Failed to update role");
                     } finally {
@@ -660,25 +409,34 @@ export default function GroupsClient() {
                 </button>
               </div>
 
-              {roleMsg && <div style={{ opacity: 0.85, fontSize: 12 }}>{roleMsg}</div>}
+              <div style={{ opacity: 0.75, fontSize: 12 }}>
+                This updates the user’s role in <b>every group they are already a member of</b>.
+              </div>
+
+              {roleMsg && <div style={{ opacity: 0.9, fontSize: 12 }}>{roleMsg}</div>}
             </div>
           </div>
         </div>
       )}
 
-      {/* If user is not leader anywhere, still show join hint */}
       {!isLeaderAnywhere && (
         <div style={{ marginTop: 16, ...surface, opacity: 0.9 }}>
           <div style={{ fontWeight: 900, marginBottom: 6 }}>Want to join a group?</div>
-          <div style={{ opacity: 0.85 }}>
+          <div style={{ opacity: 0.8 }}>
             Use{" "}
-            <Link href="/join" style={{ color: "var(--fg)" }}>
+            <Link href="/join" style={{ color: "rgba(255,255,255,0.92)" }}>
               Join with code
             </Link>
             .
           </div>
         </div>
       )}
+
+      <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+        <Link href="/messages" style={{ textDecoration: "none" }}>
+          <button style={pillBtn}>💬 Messages</button>
+        </Link>
+      </div>
     </div>
   );
 }
