@@ -41,6 +41,10 @@ export default function GroupsClient() {
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
+  // ✅ Admin gate
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminChecked, setAdminChecked] = useState(false);
+
   // ---- Leader tool: create group ----
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupStart, setNewGroupStart] = useState(""); // yyyy-mm-dd
@@ -70,6 +74,7 @@ export default function GroupsClient() {
     return allProfiles.find((p) => p.id === selectedUserId) ?? null;
   }, [allProfiles, selectedUserId]);
 
+  // Load groups
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -121,6 +126,43 @@ export default function GroupsClient() {
     }
 
     load();
+  }, []);
+
+  // ✅ Check admin status (profiles.is_admin)
+  useEffect(() => {
+    async function loadAdminFlag() {
+      setAdminChecked(false);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const uid = sessionData.session?.user?.id;
+        if (!uid) {
+          setIsAdmin(false);
+          setAdminChecked(true);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("is_admin")
+          .eq("id", uid)
+          .single();
+
+        if (error) {
+          // If RLS prevents reading is_admin for self, you'd need a policy allowing it.
+          setIsAdmin(false);
+          setAdminChecked(true);
+          return;
+        }
+
+        setIsAdmin(!!data?.is_admin);
+        setAdminChecked(true);
+      } catch {
+        setIsAdmin(false);
+        setAdminChecked(true);
+      }
+    }
+
+    loadAdminFlag();
   }, []);
 
   // Load all profiles (active users) for dropdown (leader-only)
@@ -209,11 +251,18 @@ export default function GroupsClient() {
 
   return (
     <div style={pageWrap}>
-      {/* HEADER: restore your original layout */}
+      {/* HEADER */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Your Groups</h1>
 
         <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+          {/* ✅ Admin-only button */}
+          {adminChecked && isAdmin && (
+            <Link href="/admin" style={{ textDecoration: "none" }}>
+              <button style={pillBtn}>🛠 Admin</button>
+            </Link>
+          )}
+
           <Link href="/messages" style={{ textDecoration: "none" }}>
             <button style={pillBtn}>💬 Messages</button>
           </Link>
@@ -415,7 +464,8 @@ export default function GroupsClient() {
                     try {
                       const updated = await setUserRoleAllGroups(selectedUserId, roleValue);
                       setRoleMsg(
-                        `Updated "${selectedProfile?.display_name ?? selectedProfile?.email ?? selectedUserId
+                        `Updated "${
+                          selectedProfile?.display_name ?? selectedProfile?.email ?? selectedUserId
                         }" to "${roleValue}" in ${updated} group(s).`
                       );
                     } catch (e: any) {
